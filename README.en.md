@@ -39,8 +39,6 @@ The loudness meter has been checked against the standard's calibration test: a 9
 
 You can open `en.html` (or `ru.html`) straight from the file, but serving it is more reliable:
 
-```
-
 
 ## Structure
 
