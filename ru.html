@@ -1,0 +1,1888 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Airband — восстановление верха в треках из Suno</title>
+<meta name="description" content="Браузерный инструмент: находит точку среза высоких частот в экспорте из Suno, досинтезирует гармоники выше неё и нормализует громкость. Всё считается локально.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* Токены сняты пипеткой со скриншотов iDentity Prompt Engine / Music DNA —
+     это тот же визуальный язык, не отдельная палитра. */
+  --bg: #0F1313;
+  --panel: #151A1D;
+  --panel-2: #12171A;
+  --line: #3A362E;
+  --line-soft: #232019;
+
+  --accent: #FF7F44;
+  --accent-deep: #9F3E16;
+  --accent-fill: #2E211D;
+  --accent-tint: #FFC4A3;
+
+  --text: #E8E6E3;
+  --text-muted: #B7B0A7;
+  --text-dim: #9E9589;
+
+  --warn: #DF6E5C;
+  --radius: 12px;
+  --gap: 22px;
+
+  --font-display: "Playfair Display", "Georgia", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+/* display: grid/flex на .readout/.transport/.scope-legend перебивал бы
+   атрибут hidden — атрибут должен побеждать всегда. */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  padding: 0 20px 64px;
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+p { margin: 0 0 12px; }
+
+/* ---------- эйброу / лейблы секций — моно, трекинг, капс ---------- */
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--accent);
+  text-align: center;
+  margin: 0 0 14px;
+}
+
+.section-label,
+.subsection-label {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 0 0 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.section-label { font-size: 13px; }
+.subsection-label {
+  font-size: 11.5px;
+  color: #6E695E;
+  margin-top: 22px;
+  padding-bottom: 8px;
+}
+.panel-controls .subsection-label:first-of-type { margin-top: 0; }
+
+/* ---------- masthead ---------- */
+
+.masthead {
+  padding: 56px 0 34px;
+  text-align: center;
+}
+
+.masthead h1 {
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-style: normal;
+  font-size: clamp(44px, 9vw, 68px);
+  line-height: 0.95;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  margin: 0 0 20px;
+}
+
+.lede {
+  max-width: 46ch;
+  margin: 0 auto 18px;
+  color: var(--text-muted);
+  font-size: 16px;
+}
+
+.tagline {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--accent);
+  margin: 0;
+}
+
+/* ---------- hero scope ---------- */
+
+.scope {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  overflow: hidden;
+  margin-top: 34px;
+  transition: border-color .18s ease;
+}
+
+.scope.is-hot { border-color: var(--accent); }
+
+#spectrum {
+  display: block;
+  width: 100%;
+  height: clamp(230px, 34vw, 400px);
+}
+
+.scope-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  padding: 20px;
+}
+
+.scope-empty-title {
+  font-family: var(--font-sans);
+  font-size: clamp(18px, 3.4vw, 24px);
+  font-weight: 500;
+  color: var(--text);
+  margin: 0;
+}
+
+.scope-empty-sub {
+  color: var(--text-dim);
+  font-size: 14px;
+  margin: 0 0 14px;
+}
+
+.scope-legend {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  display: flex;
+  gap: 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.key { display: flex; align-items: center; gap: 6px; color: var(--text-dim); }
+.key::before {
+  content: "";
+  width: 12px;
+  height: 2px;
+  border-radius: 2px;
+}
+.key-a::before { background: var(--text-muted); }
+.key-b::before { background: var(--accent); }
+
+/* ---------- readout ---------- */
+
+.readout {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 var(--radius) var(--radius);
+  margin-bottom: var(--gap);
+  background: var(--panel-2);
+}
+
+.cell {
+  padding: 13px 14px;
+  border-left: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.cell:first-child { border-left: 0; }
+
+.cell-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.cell-value {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.cell-value.up { color: var(--accent); }
+
+/* ---------- transport ---------- */
+
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  margin-bottom: var(--gap);
+}
+
+.ab {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+}
+
+.ab-btn {
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 15px;
+  cursor: pointer;
+}
+.ab-btn + .ab-btn { border-left: 1px solid var(--line); }
+.ab-btn.is-on { background: var(--line-soft); color: var(--text); }
+#abA.is-on { box-shadow: inset 0 -2px 0 var(--text-muted); }
+#abB.is-on { box-shadow: inset 0 -2px 0 var(--accent); color: var(--accent-tint); }
+
+.seek {
+  flex: 1 1 180px;
+  height: 6px;
+  min-width: 120px;
+  background: var(--line-soft);
+  border-radius: 4px;
+  cursor: pointer;
+  position: relative;
+}
+
+.seek-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: var(--accent);
+  border-radius: 4px;
+}
+
+.seek:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+
+.time {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  font-size: 13px;
+  min-width: 42px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.check input { accent-color: var(--accent); width: 15px; height: 15px; }
+
+/* ---------- columns ---------- */
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  gap: var(--gap);
+  align-items: stretch;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 20px;
+}
+
+.panel-tracks {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Пустой список треков не должен обрываться бордером на середине
+   высоты — растягиваем на всю панель и центрируем сообщение,
+   вместо того чтобы оставлять его прилипшим к верху над пустотой. */
+.tracks-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.panel-tracks.is-empty .tracks-body {
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+.panel-tracks.is-empty .hint {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+.panel-tracks.is-empty .panel-actions {
+  justify-content: center;
+}
+
+/* ---------- track list ---------- */
+
+.tracks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.track {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.track:hover { border-color: #4A4538; }
+.track.is-active {
+  background: var(--accent-fill);
+  border-color: var(--accent-deep);
+}
+
+.track-name {
+  font-size: 14.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.track.is-active .track-name { color: var(--accent-tint); }
+
+.track-meta {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.track-meta.err { color: var(--warn); }
+.track-meta.ok { color: var(--accent); }
+
+.track-dl {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.track-dl:hover { border-color: var(--accent); color: var(--accent); }
+.track-dl[disabled] { opacity: .35; cursor: default; }
+
+.panel-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+
+/* ---------- presets / chips — двусостояние карточек Music DNA ---------- */
+
+.presets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.chip {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  padding: 8px 12px;
+  text-align: center;
+  cursor: pointer;
+}
+.chip:hover { border-color: #4A4538; }
+.chip.is-on {
+  background: var(--accent-fill);
+  border-color: var(--accent-deep);
+  color: var(--accent-tint);
+}
+
+/* ---------- controls ---------- */
+
+.ctl {
+  display: grid;
+  grid-template-columns: 1fr 96px;
+  align-items: center;
+  gap: 4px 12px;
+  margin-bottom: 15px;
+}
+
+.ctl label {
+  font-size: 14px;
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+}
+
+.ctl output {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-dim);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ctl-wide { padding-top: 4px; }
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 22px;
+  background: transparent;
+  cursor: pointer;
+  margin: 0;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px;
+  background: var(--line);
+  border-radius: 3px;
+}
+input[type="range"]::-moz-range-track {
+  height: 3px;
+  background: var(--line);
+  border-radius: 3px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 0;
+}
+input[type="range"]::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 0;
+}
+input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgba(255,127,68,0.35); }
+input[type="range"]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px rgba(255,127,68,0.35); }
+
+/* ---------- buttons — «Save preset» = основной стиль, дефолт как selected-карточка ---------- */
+
+.btn {
+  background: var(--accent-fill);
+  color: var(--accent-tint);
+  border: 1px solid var(--accent-deep);
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 10px 18px;
+  cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); }
+.btn[disabled] { opacity: .4; cursor: default; border-color: var(--line); color: var(--text-dim); }
+
+.btn-quiet {
+  background: var(--panel-2);
+  color: var(--text-muted);
+  border-color: var(--line);
+}
+.btn-quiet:hover { border-color: #4A4538; color: var(--text); }
+
+.btn-play { min-width: 104px; }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+/* ---------- notes ---------- */
+
+.hint {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin: 12px 0 0;
+}
+
+.notes {
+  margin-top: 40px;
+  max-width: 68ch;
+}
+.notes p { color: var(--text-muted); font-size: 14.5px; }
+
+footer {
+  margin-top: 36px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  text-align: center;
+  font-family: var(--font-mono);
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 860px) {
+  .columns { grid-template-columns: 1fr; }
+  .readout { grid-template-columns: repeat(2, 1fr); }
+  .cell { border-left: 1px solid var(--line-soft); border-top: 1px solid var(--line-soft); }
+  .cell:nth-child(odd) { border-left: 0; }
+  .cell:nth-child(-n+2) { border-top: 0; }
+  .cell:last-child { grid-column: 1 / -1; border-left: 0; }
+  .masthead { padding-top: 34px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <p class="eyebrow">Suno Audio Engine</p>
+  <h1>Airband</h1>
+  <p class="lede">Suno обрезает всё выше 15–16 кГц. Airband находит этот обрыв, достраивает гармоники над ним и выравнивает громкость.</p>
+  <p class="tagline">Верни то, что кодек забрал.</p>
+</header>
+
+<main>
+
+  <section class="scope" id="dropzone" aria-label="Спектр трека">
+    <canvas id="spectrum" width="1200" height="440"></canvas>
+    <div class="scope-empty" id="scopeEmpty">
+      <p class="scope-empty-title">Перетащи сюда экспорт из Suno</p>
+      <p class="scope-empty-sub">MP3 или WAV, можно несколько сразу</p>
+      <button class="btn btn-quiet" id="pickBtn" type="button">Выбрать файлы</button>
+      <input type="file" id="fileInput" accept="audio/*,.mp3,.wav,.flac,.m4a,.ogg" multiple hidden>
+    </div>
+    <div class="scope-legend" id="scopeLegend" hidden>
+      <span class="key key-a">до</span>
+      <span class="key key-b">после</span>
+    </div>
+  </section>
+
+  <section class="readout" id="readout" hidden>
+    <div class="cell">
+      <span class="cell-label">Срез был на</span>
+      <span class="cell-value" id="rCut">—</span>
+    </div>
+    <div class="cell">
+      <span class="cell-label">Добавлено выше среза</span>
+      <span class="cell-value" id="rAir">—</span>
+    </div>
+    <div class="cell">
+      <span class="cell-label">Громкость до</span>
+      <span class="cell-value" id="rIn">—</span>
+    </div>
+    <div class="cell">
+      <span class="cell-label">Громкость после</span>
+      <span class="cell-value" id="rOut">—</span>
+    </div>
+    <div class="cell">
+      <span class="cell-label">Пик</span>
+      <span class="cell-value" id="rPk">—</span>
+    </div>
+  </section>
+
+  <section class="transport" id="transport" hidden>
+    <button class="btn btn-play" id="playBtn" type="button" aria-label="Слушать">Слушать</button>
+    <div class="ab" role="group" aria-label="Сравнение до и после">
+      <button class="ab-btn" id="abA" type="button">до</button>
+      <button class="ab-btn is-on" id="abB" type="button">после</button>
+    </div>
+    <div class="seek" id="seek" role="slider" aria-label="Позиция" tabindex="0" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div class="seek-fill" id="seekFill"></div>
+    </div>
+    <span class="time" id="time">0:00</span>
+    <label class="check">
+      <input type="checkbox" id="levelMatch" checked>
+      <span>Сравнивать на равной громкости</span>
+    </label>
+  </section>
+
+  <div class="columns">
+
+    <section class="panel panel-tracks is-empty">
+      <h2 class="section-label">Треки</h2>
+      <div class="tracks-body" id="tracksBody">
+      <ol class="tracks" id="trackList"></ol>
+      <p class="hint" id="tracksHint">Пока пусто.</p>
+      <div class="panel-actions">
+        <button class="btn" id="processAllBtn" type="button" disabled>Обработать все</button>
+        <button class="btn btn-quiet" id="clearBtn" type="button" disabled>Очистить</button>
+      </div>
+      </div>
+    </section>
+
+    <section class="panel panel-controls">
+      <h2 class="section-label">Обработка</h2>
+
+      <h3 class="subsection-label">Пресеты</h3>
+      <div class="presets" id="presets">
+        <button class="chip is-on" data-preset="mp3" type="button">Восстановление MP3</button>
+        <button class="chip" data-preset="wav" type="button">Полировка WAV</button>
+        <button class="chip" data-preset="air" type="button">Только верх</button>
+        <button class="chip" data-preset="flat" type="button">Только громкость</button>
+      </div>
+
+      <h3 class="subsection-label">Верх и тон</h3>
+
+      <div class="ctl">
+        <label for="cAir">Сколько верха достроить</label>
+        <input type="range" id="cAir" min="0" max="100" value="70">
+        <output id="oAir">70</output>
+      </div>
+
+      <div class="ctl">
+        <label for="cDrive">Плотность гармоник</label>
+        <input type="range" id="cDrive" min="0" max="100" value="65">
+        <output id="oDrive">65</output>
+      </div>
+
+      <div class="ctl">
+        <label for="cShelf">Воздух от 11 кГц</label>
+        <input type="range" id="cShelf" min="0" max="60" value="30">
+        <output id="oShelf">+3.0 дБ</output>
+      </div>
+
+      <div class="ctl">
+        <label for="cMud">Чистка мути на 300 Гц</label>
+        <input type="range" id="cMud" min="0" max="60" value="25">
+        <output id="oMud">−2.5 дБ</output>
+      </div>
+
+      <div class="ctl">
+        <label for="cWidth">Ширина стерео сверху</label>
+        <input type="range" id="cWidth" min="0" max="100" value="35">
+        <output id="oWidth">35</output>
+      </div>
+
+      <div class="ctl">
+        <label for="cGlue">Склейка компрессором</label>
+        <input type="range" id="cGlue" min="0" max="100" value="0">
+        <output id="oGlue">выкл</output>
+      </div>
+
+      <h3 class="subsection-label">Громкость</h3>
+
+      <div class="ctl ctl-wide">
+        <label for="cTarget">Целевая громкость</label>
+        <input type="range" id="cTarget" min="-180" max="-70" value="-110">
+        <output id="oTarget">−11.0 LUFS</output>
+      </div>
+
+      <p class="hint">−14 LUFS для Spotify и Apple, −11 громче и плотнее для своих сетов. Потолок держится на −1 дБ.</p>
+    </section>
+
+  </div>
+
+</main>
+
+
+<footer>
+  <p>Весь процесс — в браузере через Web Audio API.<br>Ни один файл никуда не отправляется.</p>
+</footer>
+
+<script>
+/* Airband — восстановление срезанного верха в треках из Suno.
+   Всё считается локально в браузере. */
+
+'use strict';
+
+/* ============================================================
+   1. FFT и спектральный анализ
+   ============================================================ */
+
+function makeFFT(n) {
+  const levels = Math.round(Math.log2(n));
+  const cosT = new Float64Array(n / 2);
+  const sinT = new Float64Array(n / 2);
+  for (let i = 0; i < n / 2; i++) {
+    cosT[i] = Math.cos((2 * Math.PI * i) / n);
+    sinT[i] = Math.sin((2 * Math.PI * i) / n);
+  }
+  const rev = new Uint32Array(n);
+  for (let i = 0; i < n; i++) {
+    let x = i, r = 0;
+    for (let j = 0; j < levels; j++) { r = (r << 1) | (x & 1); x >>= 1; }
+    rev[i] = r >>> 0;
+  }
+  return function fft(re, im) {
+    for (let i = 0; i < n; i++) {
+      const j = rev[i];
+      if (j > i) {
+        let t = re[i]; re[i] = re[j]; re[j] = t;
+        t = im[i]; im[i] = im[j]; im[j] = t;
+      }
+    }
+    for (let size = 2; size <= n; size *= 2) {
+      const half = size / 2;
+      const step = n / size;
+      for (let i = 0; i < n; i += size) {
+        for (let j = i, k = 0; j < i + half; j++, k += step) {
+          const l = j + half;
+          const tre = re[l] * cosT[k] + im[l] * sinT[k];
+          const tim = -re[l] * sinT[k] + im[l] * cosT[k];
+          re[l] = re[j] - tre;
+          im[l] = im[j] - tim;
+          re[j] += tre;
+          im[j] += tim;
+        }
+      }
+    }
+  };
+}
+
+const FFT_SIZE = 8192;
+const fftRun = makeFFT(FFT_SIZE);
+const hannWin = (() => {
+  const w = new Float64Array(FFT_SIZE);
+  for (let i = 0; i < FFT_SIZE; i++) {
+    w[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (FFT_SIZE - 1));
+  }
+  return w;
+})();
+
+/* Усреднённый спектр мощности по всему треку.
+   Берём до 90 окон, равномерно раскиданных по длине,
+   и пропускаем тихие куски, чтобы тишина не занижала верх. */
+function powerSpectrum(buffer) {
+  const nBins = FFT_SIZE / 2;
+  const acc = new Float64Array(nBins);
+  const chans = [];
+  for (let c = 0; c < buffer.numberOfChannels; c++) chans.push(buffer.getChannelData(c));
+  const len = buffer.length;
+  if (len < FFT_SIZE) return { power: acc, frames: 0 };
+
+  const maxFrames = 90;
+  const span = len - FFT_SIZE;
+  const step = Math.max(1, Math.floor(span / maxFrames));
+  const re = new Float64Array(FFT_SIZE);
+  const im = new Float64Array(FFT_SIZE);
+
+  // Порог тишины: считаем общий RMS по разреженной выборке.
+  let rough = 0, cnt = 0;
+  for (let i = 0; i < len; i += 997) { const v = chans[0][i]; rough += v * v; cnt++; }
+  const globalRms = Math.sqrt(rough / Math.max(1, cnt));
+  const floor = globalRms * 0.25;
+
+  let frames = 0;
+  for (let off = 0; off <= span && frames < maxFrames; off += step) {
+    let rms = 0;
+    for (let i = 0; i < FFT_SIZE; i += 16) {
+      let s = 0;
+      for (let c = 0; c < chans.length; c++) s += chans[c][off + i];
+      s /= chans.length;
+      rms += s * s;
+    }
+    rms = Math.sqrt(rms / (FFT_SIZE / 16));
+    if (rms < floor) continue;
+
+    for (let i = 0; i < FFT_SIZE; i++) {
+      let s = 0;
+      for (let c = 0; c < chans.length; c++) s += chans[c][off + i];
+      re[i] = (s / chans.length) * hannWin[i];
+      im[i] = 0;
+    }
+    fftRun(re, im);
+    for (let b = 0; b < nBins; b++) acc[b] += re[b] * re[b] + im[b] * im[b];
+    frames++;
+  }
+  if (frames === 0) return { power: acc, frames: 0 };
+  for (let b = 0; b < nBins; b++) acc[b] /= frames;
+  return { power: acc, frames };
+}
+
+/* Сглаживание по 1/12 октавы — иначе кривая выглядит как шум. */
+function smoothOctave(power, sampleRate, frac) {
+  const n = power.length;
+  const binHz = sampleRate / FFT_SIZE;
+  const out = new Float64Array(n);
+  const k = Math.pow(2, frac / 2);
+  for (let i = 1; i < n; i++) {
+    const f = i * binHz;
+    let lo = Math.max(1, Math.floor((f / k) / binHz));
+    let hi = Math.min(n - 1, Math.ceil((f * k) / binHz));
+    if (hi < lo) hi = lo;
+    let s = 0;
+    for (let j = lo; j <= hi; j++) s += power[j];
+    out[i] = s / (hi - lo + 1);
+  }
+  out[0] = out[1];
+  return out;
+}
+
+function toDb(power) {
+  const out = new Float32Array(power.length);
+  for (let i = 0; i < power.length; i++) out[i] = 10 * Math.log10(power[i] + 1e-20);
+  return out;
+}
+
+/* Опорный уровень — 80-й перцентиль в полосе 1–5 кГц.
+   Устойчив и к тихим, и к перегруженным трекам. */
+function bandReference(db, sampleRate) {
+  const binHz = sampleRate / FFT_SIZE;
+  const lo = Math.max(1, Math.floor(1000 / binHz));
+  const hi = Math.min(db.length - 1, Math.floor(5000 / binHz));
+  const arr = [];
+  for (let i = lo; i <= hi; i++) arr.push(db[i]);
+  if (!arr.length) return -60;
+  arr.sort((a, b) => a - b);
+  return arr[Math.floor(arr.length * 0.8)];
+}
+
+/* Ищем обрыв: идём сверху вниз, находим первую частоту,
+   где три бина подряд выше порога. */
+function detectCutoff(db, sampleRate) {
+  const binHz = sampleRate / FFT_SIZE;
+  const nyq = sampleRate / 2;
+  const ref = bandReference(db, sampleRate);
+  const thr = ref - 45;
+  const maxBin = Math.min(db.length - 1, Math.floor((nyq * 0.995) / binHz));
+  const minBin = Math.floor(6000 / binHz);
+  let cutBin = maxBin;
+  for (let i = maxBin; i > minBin + 2; i--) {
+    if (db[i] > thr && db[i - 1] > thr && db[i - 2] > thr) { cutBin = i; break; }
+  }
+  const f = cutBin * binHz;
+  const full = f > nyq * 0.9;
+  return {
+    hz: Math.max(7000, Math.min(f, nyq * 0.985)),
+    fullRange: full,
+    ref
+  };
+}
+
+/* Энергия выше точки среза, в дБ — показываем, сколько реально добавили. */
+function energyAbove(db, sampleRate, fromHz) {
+  const binHz = sampleRate / FFT_SIZE;
+  const lo = Math.floor(fromHz / binHz);
+  const hi = Math.min(db.length - 1, Math.floor((sampleRate / 2 * 0.98) / binHz));
+  if (hi <= lo) return -120;
+  let s = 0;
+  for (let i = lo; i <= hi; i++) s += Math.pow(10, db[i] / 10);
+  return 10 * Math.log10(s / (hi - lo + 1) + 1e-20);
+}
+
+/* ============================================================
+   2. Обработка: цепь в OfflineAudioContext
+   ============================================================ */
+
+function bq(ctx, type, freq, q) {
+  const f = ctx.createBiquadFilter();
+  f.type = type;
+  f.frequency.value = freq;
+  f.Q.value = q;
+  return f;
+}
+
+/* Несимметричная мягкая кривая: даёт и чётные, и нечётные гармоники.
+   Чётные звучат теплее, нечётные — ярче; вместе получается «воздух». */
+const shaperCurve = (() => {
+  const n = 8192;
+  const c = new Float32Array(n);
+  let peak = 0;
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    const y = Math.tanh(2.5 * x + 0.35 * x * x);
+    c[i] = y;
+    if (Math.abs(y) > peak) peak = Math.abs(y);
+  }
+  for (let i = 0; i < n; i++) c[i] /= peak;
+  return c;
+})();
+
+function attachWidth(ctx, node, w) {
+  const sp = ctx.createChannelSplitter(2);
+  node.connect(sp);
+
+  const gL = ctx.createGain(), gR = ctx.createGain();
+  sp.connect(gL, 0);
+  sp.connect(gR, 1);
+
+  const mid = ctx.createGain(); mid.gain.value = 1;
+  const side = ctx.createGain(); side.gain.value = 1;
+
+  const a = ctx.createGain(); a.gain.value = 0.5; gL.connect(a); a.connect(mid);
+  const b = ctx.createGain(); b.gain.value = 0.5; gR.connect(b); b.connect(mid);
+  const c = ctx.createGain(); c.gain.value = 0.5; gL.connect(c); c.connect(side);
+  const d = ctx.createGain(); d.gain.value = -0.5; gR.connect(d); d.connect(side);
+
+  const sideSum = ctx.createGain(); sideSum.gain.value = 1;
+  side.connect(sideSum);
+
+  const sHp = bq(ctx, 'highpass', 2500, 0.7);
+  const sG = ctx.createGain(); sG.gain.value = w * 1.2;
+  side.connect(sHp); sHp.connect(sG); sG.connect(sideSum);
+
+  const outL = ctx.createGain(), outR = ctx.createGain();
+  mid.connect(outL); sideSum.connect(outL);
+  mid.connect(outR);
+  const inv = ctx.createGain(); inv.gain.value = -1;
+  sideSum.connect(inv); inv.connect(outR);
+
+  const mg = ctx.createChannelMerger(2);
+  outL.connect(mg, 0, 0);
+  outR.connect(mg, 0, 1);
+  return mg;
+}
+
+async function renderChain(buffer, p, cut) {
+  const sr = buffer.sampleRate;
+  const nyq = sr / 2;
+  const ctx = new OfflineAudioContext(2, buffer.length, sr);
+
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+
+  const rumble = bq(ctx, 'highpass', 26, 0.6);
+  const mud = bq(ctx, 'peaking', 300, 0.9);
+  mud.gain.value = p.mud;
+
+  const pre = ctx.createGain();
+  src.connect(rumble);
+  rumble.connect(mud);
+  mud.connect(pre);
+
+  const bus = ctx.createGain();
+  pre.connect(bus);
+
+  // Экситер — источник новых высоких.
+  const room = nyq * 0.93 - cut.hz;
+  if (p.air > 0.001 && room > 800) {
+    const srcLo = Math.max(2500, cut.hz * 0.42);
+    const srcHi = Math.min(cut.hz * 0.94, nyq * 0.96);
+
+    const h1 = bq(ctx, 'highpass', srcLo, 0.7);
+    const h2 = bq(ctx, 'highpass', srcLo, 0.7);
+    const l1 = bq(ctx, 'lowpass', srcHi, 0.7);
+
+    const drive = ctx.createGain();
+    drive.gain.value = 1 + p.drive * 14;
+
+    const ws = ctx.createWaveShaper();
+    ws.curve = shaperCurve;
+    ws.oversample = '4x';
+
+    const cutF = Math.min(cut.hz * 0.98, nyq * 0.9);
+    const o1 = bq(ctx, 'highpass', cutF, 0.7);
+    const o2 = bq(ctx, 'highpass', cutF, 0.7);
+    const o3 = bq(ctx, 'lowpass', nyq * 0.93, 0.7);
+
+    const wet = ctx.createGain();
+    wet.gain.value = p.air * 0.55;
+
+    pre.connect(h1); h1.connect(h2); h2.connect(l1); l1.connect(drive);
+    drive.connect(ws); ws.connect(o1); o1.connect(o2); o2.connect(o3);
+    o3.connect(wet); wet.connect(bus);
+  }
+
+  const air = bq(ctx, 'highshelf', 11000, 0.7);
+  air.gain.value = p.shelf;
+  bus.connect(air);
+
+  let tail = air;
+
+  if (p.glue > 0.001) {
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -20;
+    comp.knee.value = 10;
+    comp.ratio.value = 1 + p.glue * 2.5;
+    comp.attack.value = 0.02;
+    comp.release.value = 0.25;
+    tail.connect(comp);
+    const mk = ctx.createGain();
+    mk.gain.value = Math.pow(10, (p.glue * 2.5) / 20);
+    comp.connect(mk);
+    tail = mk;
+  }
+
+  if (p.width > 0.001) {
+    tail = attachWidth(ctx, tail, p.width);
+  }
+
+  tail.connect(ctx.destination);
+  src.start();
+  return ctx.startRendering();
+}
+
+/* ============================================================
+   3. Громкость по ITU-R BS.1770 и лимитер
+   ============================================================ */
+
+function biquadCoeffs(sampleRate) {
+  // Ступень 1: шельф головы, ступень 2: RLB highpass.
+  let f0 = 1681.974450955533;
+  let G = 3.999843853973347;
+  let Q = 0.7071752369554196;
+  let K = Math.tan((Math.PI * f0) / sampleRate);
+  const Vh = Math.pow(10, G / 20);
+  const Vb = Math.pow(Vh, 0.4996667741545416);
+  let a0 = 1 + K / Q + K * K;
+  const s1 = {
+    b0: (Vh + (Vb * K) / Q + K * K) / a0,
+    b1: (2 * (K * K - Vh)) / a0,
+    b2: (Vh - (Vb * K) / Q + K * K) / a0,
+    a1: (2 * (K * K - 1)) / a0,
+    a2: (1 - K / Q + K * K) / a0
+  };
+
+  f0 = 38.13547087602444;
+  Q = 0.5003270373238773;
+  K = Math.tan((Math.PI * f0) / sampleRate);
+  a0 = 1 + K / Q + K * K;
+  const s2 = {
+    b0: 1,
+    b1: -2,
+    b2: 1,
+    a1: (2 * (K * K - 1)) / a0,
+    a2: (1 - K / Q + K * K) / a0
+  };
+  // b нормируем на a0
+  s2.b0 /= a0; s2.b1 /= a0; s2.b2 /= a0;
+  return [s1, s2];
+}
+
+/* K-взвешивание считается потоково и сразу сворачивается
+   в суммы по отрезкам 100 мс — блоки 400 мс собираются из четырёх.
+   Так не нужно держать в памяти отфильтрованную копию трека. */
+function measureLUFS(chans, sampleRate) {
+  const [s1, s2] = biquadCoeffs(sampleRate);
+  const len = chans[0].length;
+  const seg = Math.round(0.1 * sampleRate);
+  const nSeg = Math.floor(len / seg);
+  if (nSeg < 4) return -70;
+
+  const segSum = new Float64Array(nSeg);
+  for (const ch of chans) {
+    let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    let z1 = 0, z2 = 0, w1 = 0, w2 = 0;
+    for (let s = 0; s < nSeg; s++) {
+      const start = s * seg, end = start + seg;
+      let acc = 0;
+      for (let i = start; i < end; i++) {
+        const xi = ch[i];
+        const yi = s1.b0 * xi + s1.b1 * x1 + s1.b2 * x2 - s1.a1 * y1 - s1.a2 * y2;
+        x2 = x1; x1 = xi; y2 = y1; y1 = yi;
+        const wi = s2.b0 * yi + s2.b1 * z1 + s2.b2 * z2 - s2.a1 * w1 - s2.a2 * w2;
+        z2 = z1; z1 = yi; w2 = w1; w1 = wi;
+        acc += wi * wi;
+      }
+      segSum[s] += acc;
+    }
+  }
+
+  const powers = [];
+  for (let s = 0; s + 4 <= nSeg; s++) {
+    const sum = segSum[s] + segSum[s + 1] + segSum[s + 2] + segSum[s + 3];
+    powers.push(sum / (4 * seg));
+  }
+  if (!powers.length) return -70;
+
+  const lk = (pw) => -0.691 + 10 * Math.log10(pw + 1e-20);
+
+  // Абсолютный гейт −70 LUFS
+  let sel = powers.filter((pw) => lk(pw) > -70);
+  if (!sel.length) return -70;
+
+  // Относительный гейт −10 LU от средней мощности
+  const mean = sel.reduce((a, b) => a + b, 0) / sel.length;
+  const relThr = lk(mean) - 10;
+  sel = sel.filter((pw) => lk(pw) > relThr);
+  if (!sel.length) return -70;
+
+  const mean2 = sel.reduce((a, b) => a + b, 0) / sel.length;
+  return lk(mean2);
+}
+
+function truePeakDb(chans) {
+  // Оценка с 4-кратной линейной интерполяцией — чуть пессимистичнее
+  // сэмплового пика, чего для потолка −1 дБ достаточно.
+  let peak = 0;
+  for (const ch of chans) {
+    for (let i = 0; i < ch.length - 1; i++) {
+      const a = Math.abs(ch[i]);
+      if (a > peak) peak = a;
+      const d = (ch[i + 1] - ch[i]) / 4;
+      for (let k = 1; k < 4; k++) {
+        const v = Math.abs(ch[i] + d * k);
+        if (v > peak) peak = v;
+      }
+    }
+  }
+  return 20 * Math.log10(peak + 1e-20);
+}
+
+/* Лимитер с упреждением: сначала считаем нужное усиление на каждый сэмпл,
+   потом берём скользящий минимум вперёд — гейн падает заранее,
+   до самого пика, без щелчков. */
+function limit(chans, ceilingLin, sampleRate) {
+  const len = chans[0].length;
+  const look = Math.max(1, Math.round(0.002 * sampleRate));
+  const req = new Float32Array(len);
+  for (let i = 0; i < len; i++) {
+    let p = 0;
+    for (let c = 0; c < chans.length; c++) {
+      const a = Math.abs(chans[c][i]);
+      if (a > p) p = a;
+    }
+    req[i] = p > ceilingLin ? ceilingLin / p : 1;
+  }
+
+  // Скользящий минимум по окну [i, i+look] через монотонную деку.
+  // Дека не длиннее окна, поэтому держим её в кольцевом буфере.
+  const g = new Float32Array(len);
+  const cap = look + 2;
+  const dq = new Int32Array(cap);
+  let head = 0, tail = 0, size = 0;
+  for (let i = len - 1; i >= 0; i--) {
+    while (size > 0 && req[dq[(tail - 1 + cap) % cap]] >= req[i]) {
+      tail = (tail - 1 + cap) % cap;
+      size--;
+    }
+    dq[tail] = i;
+    tail = (tail + 1) % cap;
+    size++;
+    while (dq[head] > i + look) {
+      head = (head + 1) % cap;
+      size--;
+    }
+    g[i] = req[dq[head]];
+  }
+
+  const rel = Math.exp(-1 / (0.12 * sampleRate));
+  let s = 1;
+  for (let i = 0; i < len; i++) {
+    const t = g[i];
+    s = t < s ? t : s * rel + t * (1 - rel);
+    for (let c = 0; c < chans.length; c++) {
+      let v = chans[c][i] * s;
+      if (v > ceilingLin) v = ceilingLin;
+      else if (v < -ceilingLin) v = -ceilingLin;
+      chans[c][i] = v;
+    }
+  }
+}
+
+/* ============================================================
+   4. Экспорт WAV 24 бита с TPDF-дизерингом
+   ============================================================ */
+
+function encodeWav24(buffer) {
+  const ch = buffer.numberOfChannels;
+  const len = buffer.length;
+  const sr = buffer.sampleRate;
+  const bytes = len * ch * 3;
+  const ab = new ArrayBuffer(44 + bytes);
+  const dv = new DataView(ab);
+
+  const str = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+  str(0, 'RIFF');
+  dv.setUint32(4, 36 + bytes, true);
+  str(8, 'WAVE');
+  str(12, 'fmt ');
+  dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true);
+  dv.setUint16(22, ch, true);
+  dv.setUint32(24, sr, true);
+  dv.setUint32(28, sr * ch * 3, true);
+  dv.setUint16(32, ch * 3, true);
+  dv.setUint16(34, 24, true);
+  str(36, 'data');
+  dv.setUint32(40, bytes, true);
+
+  const data = [];
+  for (let c = 0; c < ch; c++) data.push(buffer.getChannelData(c));
+
+  const scale = 8388607;
+  const ditherAmp = 1 / scale;
+  let off = 44;
+  for (let i = 0; i < len; i++) {
+    for (let c = 0; c < ch; c++) {
+      const dither = (Math.random() + Math.random() - 1) * ditherAmp;
+      let v = data[c][i] + dither;
+      if (v > 1) v = 1; else if (v < -1) v = -1;
+      const s = Math.round(v * scale);
+      dv.setUint8(off, s & 0xff);
+      dv.setUint8(off + 1, (s >> 8) & 0xff);
+      dv.setUint8(off + 2, (s >> 16) & 0xff);
+      off += 3;
+    }
+  }
+  return new Blob([ab], { type: 'audio/wav' });
+}
+
+/* ============================================================
+   5. Состояние и параметры
+   ============================================================ */
+
+const PRESETS = {
+  mp3:  { air: 0.70, drive: 0.65, shelf: 3.0, mud: -2.5, width: 0.35, glue: 0 },
+  wav:  { air: 0.45, drive: 0.45, shelf: 2.0, mud: -1.5, width: 0.25, glue: 0 },
+  air:  { air: 0.60, drive: 0.50, shelf: 2.5, mud: 0.0,  width: 0.00, glue: 0 },
+  flat: { air: 0.00, drive: 0.00, shelf: 0.0, mud: 0.0,  width: 0.00, glue: 0 }
+};
+
+const state = {
+  tracks: [],
+  activeId: null,
+  seq: 0,
+  params: Object.assign({ target: -11.0, ceiling: -1.0 }, PRESETS.mp3),
+  ab: 'b',
+  levelMatch: true,
+  busy: false
+};
+
+const $ = (id) => document.getElementById(id);
+
+/* ============================================================
+   6. Загрузка файлов
+   ============================================================ */
+
+/* Декодируем в контекст с фиксированными 48 кГц.
+   decodeAudioData сам пересчитает частоту, а нам это на руку:
+   над срезом в 16 кГц остаётся 8 кГц свободного места под гармоники. */
+let decodeCtx = null;
+function getDecodeCtx() {
+  if (!decodeCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    try {
+      decodeCtx = new AC({ sampleRate: 48000 });
+    } catch (e) {
+      decodeCtx = new AC();
+    }
+  }
+  return decodeCtx;
+}
+
+async function addFiles(fileList) {
+  const files = Array.from(fileList).filter((f) => /audio|\.mp3|\.wav|\.flac|\.m4a|\.ogg|\.aac/i.test(f.type + f.name));
+  if (!files.length) return;
+
+  for (const f of files) {
+    const track = {
+      id: ++state.seq,
+      name: f.name.replace(/\.[^.]+$/, ''),
+      file: f,
+      orig: null,
+      proc: null,
+      status: 'Читаю',
+      error: null,
+      stats: null,
+      specA: null,
+      specB: null
+    };
+    state.tracks.push(track);
+  }
+  renderTracks();
+  if (state.activeId === null && state.tracks.length) setActive(state.tracks[0].id);
+
+  for (const t of state.tracks) {
+    if (t.orig || t.error) continue;
+    try {
+      const ab = await t.file.arrayBuffer();
+      t.orig = await getDecodeCtx().decodeAudioData(ab);
+      t.status = 'Готов к обработке';
+    } catch (e) {
+      t.error = 'Формат не читается';
+      t.status = 'Формат не читается';
+    }
+    t.file = null;
+    renderTracks();
+    if (t.id === state.activeId) { analyseOriginal(t); drawScope(); updateReadout(); }
+  }
+  updateButtons();
+}
+
+function analyseOriginal(t) {
+  if (!t.orig || t.specA) return;
+  const ps = powerSpectrum(t.orig);
+  const sm = smoothOctave(ps.power, t.orig.sampleRate, 1 / 12);
+  t.specA = toDb(sm);
+  t.cut = detectCutoff(t.specA, t.orig.sampleRate);
+}
+
+/* ============================================================
+   7. Обработка одного трека
+   ============================================================ */
+
+async function processTrack(t) {
+  if (!t.orig || t.error) return;
+  analyseOriginal(t);
+
+  t.status = 'Обрабатываю';
+  renderTracks();
+  await new Promise((r) => setTimeout(r, 0));
+
+  const p = state.params;
+  const rendered = await renderChain(t.orig, p, t.cut);
+
+  const sr = rendered.sampleRate;
+  const chans = [];
+  for (let c = 0; c < rendered.numberOfChannels; c++) {
+    chans.push(Float32Array.from(rendered.getChannelData(c)));
+  }
+
+  const lufsIn = measureLUFS(
+    Array.from({ length: t.orig.numberOfChannels }, (_, c) => t.orig.getChannelData(c)),
+    t.orig.sampleRate
+  );
+
+  // Лимитер сам по себе снижает громкость, особенно на плотном материале,
+  // поэтому одного прохода мало: цель уточняется итеративно, пока промах
+  // не станет меньше десятой доли децибела. Тот же приём, что в Python-версии.
+  const dry = chans.map((ch) => Float32Array.from(ch));
+  const lufsMid = measureLUFS(dry, sr);
+  const ceiling = Math.pow(10, p.ceiling / 20);
+
+  let totalDb = p.target - lufsMid;
+  let after = lufsMid;
+  const applyGain = (db) => {
+    const g = Math.pow(10, db / 20);
+    for (let c = 0; c < chans.length; c++) {
+      const src = dry[c], dst = chans[c];
+      for (let i = 0; i < src.length; i++) dst[i] = src[i] * g;
+    }
+    limit(chans, ceiling, sr);
+    return measureLUFS(chans, sr);
+  };
+
+  after = applyGain(totalDb);
+  for (let pass = 1; pass < 4 && Math.abs(p.target - after) > 0.1 && after > -70; pass++) {
+    totalDb += p.target - after;
+    after = applyGain(totalDb);
+  }
+
+  const out = getDecodeCtx().createBuffer(chans.length, rendered.length, sr);
+  for (let c = 0; c < chans.length; c++) out.copyToChannel(chans[c], c);
+  t.proc = out;
+
+  const psB = powerSpectrum(out);
+  t.specB = toDb(smoothOctave(psB.power, sr, 1 / 12));
+
+  const from = t.cut.hz;
+  const eA = energyAbove(t.specA, t.orig.sampleRate, from);
+  const eB = energyAbove(t.specB, sr, from);
+
+  t.stats = {
+    cutHz: t.cut.hz,
+    fullRange: t.cut.fullRange,
+    lufsIn,
+    lufsOut: after,
+    peak: truePeakDb(chans),
+    airGain: eB - eA
+  };
+  t.status = 'Готово';
+  renderTracks();
+  if (t.id === state.activeId) { drawScope(); updateReadout(); }
+}
+
+async function processAll() {
+  if (state.busy) return;
+  state.busy = true;
+  updateButtons();
+  for (const t of state.tracks) {
+    if (!t.orig || t.error) continue;
+    try {
+      await processTrack(t);
+    } catch (e) {
+      t.error = 'Не удалось обработать';
+      t.status = 'Не удалось обработать';
+      renderTracks();
+    }
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  state.busy = false;
+  updateButtons();
+}
+
+/* ============================================================
+   8. Отрисовка спектра
+   ============================================================ */
+
+const canvas = $('spectrum');
+const cctx = canvas.getContext('2d');
+
+function fitCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const r = canvas.getBoundingClientRect();
+  canvas.width = Math.round(r.width * dpr);
+  canvas.height = Math.round(r.height * dpr);
+  cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { w: r.width, h: r.height };
+}
+
+function drawScope() {
+  const { w, h } = fitCanvas();
+  cctx.clearRect(0, 0, w, h);
+
+  const t = state.tracks.find((x) => x.id === state.activeId);
+  const pad = { l: 10, r: 10, t: 16, b: 26 };
+  const sr = t && t.orig ? t.orig.sampleRate : 44100;
+  const fMin = 30, fMax = sr / 2;
+  const lMin = Math.log10(fMin), lMax = Math.log10(fMax);
+  const xOf = (f) => pad.l + ((Math.log10(Math.max(f, fMin)) - lMin) / (lMax - lMin)) * (w - pad.l - pad.r);
+
+  const dbTop = 6, dbBot = -84;
+  const yOf = (db) => pad.t + ((dbTop - db) / (dbTop - dbBot)) * (h - pad.t - pad.b);
+
+  // Сетка
+  cctx.strokeStyle = '#232019';
+  cctx.fillStyle = '#6E695E';
+  cctx.lineWidth = 1;
+  cctx.font = '11px "JetBrains Mono", monospace';
+  cctx.textAlign = 'center';
+  for (const f of [100, 1000, 5000, 10000, 15000, 20000]) {
+    if (f > fMax) continue;
+    const x = Math.round(xOf(f)) + 0.5;
+    cctx.beginPath();
+    cctx.moveTo(x, pad.t);
+    cctx.lineTo(x, h - pad.b);
+    cctx.stroke();
+    cctx.fillText(f >= 1000 ? f / 1000 + 'к' : String(f), x, h - 9);
+  }
+
+  if (!t || !t.specA) return;
+
+  const ref = bandReference(t.specA, t.orig.sampleRate);
+
+  const path = (db, refLevel, srLocal) => {
+    const bh = srLocal / FFT_SIZE;
+    cctx.beginPath();
+    let started = false;
+    for (let i = 1; i < db.length; i++) {
+      const f = i * bh;
+      if (f < fMin) continue;
+      if (f > fMax) break;
+      const v = db[i] - refLevel;
+      const x = xOf(f);
+      const y = yOf(Math.max(dbBot, Math.min(dbTop, v)));
+      if (!started) { cctx.moveTo(x, y); started = true; }
+      else cctx.lineTo(x, y);
+    }
+  };
+
+  // Оригинал — заливка
+  path(t.specA, ref, t.orig.sampleRate);
+  cctx.lineTo(xOf(fMax), h - pad.b);
+  cctx.lineTo(xOf(fMin), h - pad.b);
+  cctx.closePath();
+  cctx.fillStyle = 'rgba(183, 176, 167, 0.10)';
+  cctx.fill();
+
+  path(t.specA, ref, t.orig.sampleRate);
+  cctx.strokeStyle = '#B7B0A7';
+  cctx.lineWidth = 1.4;
+  cctx.stroke();
+
+  // Обработанный — линия
+  if (t.specB) {
+    const refB = bandReference(t.specB, t.proc.sampleRate);
+    path(t.specB, refB, t.proc.sampleRate);
+    cctx.strokeStyle = '#FF7F44';
+    cctx.lineWidth = 1.8;
+    cctx.stroke();
+  }
+
+  // Линия среза
+  if (t.cut && !t.cut.fullRange) {
+    const x = Math.round(xOf(t.cut.hz)) + 0.5;
+    cctx.save();
+    cctx.setLineDash([4, 5]);
+    cctx.strokeStyle = 'rgba(255, 127, 68, 0.55)';
+    cctx.lineWidth = 1;
+    cctx.beginPath();
+    cctx.moveTo(x, pad.t);
+    cctx.lineTo(x, h - pad.b);
+    cctx.stroke();
+    cctx.restore();
+    cctx.fillStyle = '#FF7F44';
+    cctx.textAlign = x > w - 90 ? 'right' : 'left';
+    cctx.fillText((t.cut.hz / 1000).toFixed(1) + ' кГц', x > w - 90 ? x - 6 : x + 6, pad.t + 12);
+  }
+}
+
+/* ============================================================
+   9. UI
+   ============================================================ */
+
+function fmtDb(v) {
+  const s = v.toFixed(1).replace('-', '−');
+  return (v > 0 ? '+' : '') + s + ' дБ';
+}
+function fmtLufs(v) {
+  return v.toFixed(1).replace('-', '−') + ' LUFS';
+}
+
+function renderTracks() {
+  const list = $('trackList');
+  list.innerHTML = '';
+  $('tracksHint').hidden = state.tracks.length > 0;
+  document.querySelector('.panel-tracks').classList.toggle('is-empty', state.tracks.length === 0);
+
+  for (const t of state.tracks) {
+    const li = document.createElement('li');
+    li.className = 'track' + (t.id === state.activeId ? ' is-active' : '');
+    li.tabIndex = 0;
+
+    const left = document.createElement('div');
+    const nm = document.createElement('div');
+    nm.className = 'track-name';
+    nm.textContent = t.name;
+    const meta = document.createElement('div');
+    meta.className = 'track-meta' + (t.error ? ' err' : t.proc ? ' ok' : '');
+    meta.textContent = t.stats
+      ? (t.stats.cutHz / 1000).toFixed(1) + ' кГц → ' + fmtLufs(t.stats.lufsOut)
+      : t.status;
+    left.appendChild(nm);
+    left.appendChild(meta);
+
+    const dl = document.createElement('button');
+    dl.className = 'track-dl';
+    dl.type = 'button';
+    dl.textContent = 'WAV';
+    dl.disabled = !t.proc;
+    dl.addEventListener('click', (e) => { e.stopPropagation(); download(t); });
+
+    li.appendChild(left);
+    li.appendChild(dl);
+    li.addEventListener('click', () => setActive(t.id));
+    li.addEventListener('keydown', (e) => { if (e.key === 'Enter') setActive(t.id); });
+    list.appendChild(li);
+  }
+  updateButtons();
+}
+
+function setActive(id) {
+  if (state.activeId !== id) {
+    stopPlayback();
+    player.offset = 0;
+    const fill = $('seekFill');
+    if (fill) fill.style.width = '0%';
+    $('time').textContent = '0:00';
+  }
+  state.activeId = id;
+  const t = state.tracks.find((x) => x.id === id);
+  if (t) analyseOriginal(t);
+  renderTracks();
+  drawScope();
+  updateReadout();
+}
+
+function updateReadout() {
+  const t = state.tracks.find((x) => x.id === state.activeId);
+  const has = !!(t && t.specA);
+  $('readout').hidden = !has;
+  $('scopeEmpty').hidden = has;
+  $('scopeLegend').hidden = !has;
+  $('transport').hidden = !(t && t.orig);
+  if (!has) return;
+
+  $('rCut').textContent = t.cut.fullRange
+    ? 'нет обрыва'
+    : (t.cut.hz / 1000).toFixed(1) + ' кГц';
+
+  const s = t.stats;
+  $('rAir').textContent = s ? fmtDb(s.airGain) : '—';
+  $('rAir').className = 'cell-value' + (s && s.airGain > 3 ? ' up' : '');
+  $('rIn').textContent = s ? fmtLufs(s.lufsIn) : '—';
+  $('rOut').textContent = s ? fmtLufs(s.lufsOut) : '—';
+  $('rPk').textContent = s ? fmtDb(s.peak) : '—';
+}
+
+function updateButtons() {
+  const ready = state.tracks.some((t) => t.orig && !t.error);
+  $('processAllBtn').disabled = !ready || state.busy;
+  $('processAllBtn').textContent = state.busy ? 'Считаю…' : 'Обработать все';
+  $('clearBtn').disabled = state.tracks.length === 0 || state.busy;
+}
+
+function download(t) {
+  if (!t.proc) return;
+  const blob = encodeWav24(t.proc);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = t.name + ' (airband).wav';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+}
+
+/* ---------- слайдеры ---------- */
+
+const controls = [
+  { el: 'cAir',    out: 'oAir',    key: 'air',    map: (v) => v / 100,        fmt: (v) => String(Math.round(v * 100)) },
+  { el: 'cDrive',  out: 'oDrive',  key: 'drive',  map: (v) => v / 100,        fmt: (v) => String(Math.round(v * 100)) },
+  { el: 'cShelf',  out: 'oShelf',  key: 'shelf',  map: (v) => v / 10,         fmt: (v) => fmtDb(v) },
+  { el: 'cMud',    out: 'oMud',    key: 'mud',    map: (v) => -v / 10,        fmt: (v) => (v === 0 ? 'выкл' : fmtDb(v)) },
+  { el: 'cWidth',  out: 'oWidth',  key: 'width',  map: (v) => v / 100,        fmt: (v) => (v === 0 ? 'выкл' : String(Math.round(v * 100))) },
+  { el: 'cGlue',   out: 'oGlue',   key: 'glue',   map: (v) => v / 100,        fmt: (v) => (v === 0 ? 'выкл' : String(Math.round(v * 100))) },
+  { el: 'cTarget', out: 'oTarget', key: 'target', map: (v) => v / 10,         fmt: (v) => fmtLufs(v) }
+];
+
+function syncControls() {
+  for (const c of controls) {
+    const val = state.params[c.key];
+    const el = $(c.el);
+    if (c.key === 'mud') el.value = String(Math.round(-val * 10));
+    else if (c.key === 'shelf' || c.key === 'target') el.value = String(Math.round(val * 10));
+    else el.value = String(Math.round(val * 100));
+    $(c.out).textContent = c.fmt(val);
+  }
+}
+
+for (const c of controls) {
+  $(c.el).addEventListener('input', (e) => {
+    const v = c.map(Number(e.target.value));
+    state.params[c.key] = v;
+    $(c.out).textContent = c.fmt(v);
+    markPresetCustom();
+  });
+}
+
+function markPresetCustom() {
+  const p = state.params;
+  let match = null;
+  for (const [k, v] of Object.entries(PRESETS)) {
+    if (Object.keys(v).every((key) => Math.abs(v[key] - p[key]) < 0.005)) { match = k; break; }
+  }
+  document.querySelectorAll('.chip').forEach((c) => {
+    c.classList.toggle('is-on', c.dataset.preset === match);
+  });
+}
+
+document.querySelectorAll('.chip').forEach((chip) => {
+  chip.addEventListener('click', () => {
+    Object.assign(state.params, PRESETS[chip.dataset.preset]);
+    syncControls();
+    markPresetCustom();
+  });
+});
+
+/* ---------- drag & drop ---------- */
+
+const dz = $('dropzone');
+['dragenter', 'dragover'].forEach((ev) =>
+  dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add('is-hot'); })
+);
+['dragleave', 'drop'].forEach((ev) =>
+  dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove('is-hot'); })
+);
+dz.addEventListener('drop', (e) => {
+  if (e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+});
+
+$('pickBtn').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', (e) => {
+  addFiles(e.target.files);
+  e.target.value = '';
+});
+
+$('processAllBtn').addEventListener('click', processAll);
+$('clearBtn').addEventListener('click', () => {
+  stopPlayback();
+  state.tracks = [];
+  state.activeId = null;
+  renderTracks();
+  drawScope();
+  updateReadout();
+});
+
+/* ============================================================
+   10. Плеер с мгновенным A/B
+   ============================================================ */
+
+const player = { ctx: null, a: null, b: null, gA: null, gB: null, t0: 0, offset: 0, on: false, raf: 0 };
+
+function playerCtx() {
+  if (!player.ctx) player.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  return player.ctx;
+}
+
+function abGains() {
+  const t = state.tracks.find((x) => x.id === state.activeId);
+  let bGain = 1;
+  if (state.levelMatch && t && t.stats) {
+    bGain = Math.pow(10, (t.stats.lufsIn - t.stats.lufsOut) / 20);
+  }
+  const wantB = state.ab === 'b' && t && t.proc;
+  return { a: wantB ? 0 : 1, b: wantB ? bGain : 0 };
+}
+
+function applyAB(ramp) {
+  if (!player.gA) return;
+  const g = abGains();
+  const now = playerCtx().currentTime;
+  const tc = ramp ? 0.012 : 0;
+  player.gA.gain.setTargetAtTime(g.a, now, Math.max(0.0001, tc));
+  player.gB.gain.setTargetAtTime(g.b, now, Math.max(0.0001, tc));
+}
+
+function startPlayback() {
+  const t = state.tracks.find((x) => x.id === state.activeId);
+  if (!t || !t.orig) return;
+  const ctx = playerCtx();
+  if (ctx.state === 'suspended') ctx.resume();
+  stopSources();
+
+  player.gA = ctx.createGain();
+  player.gB = ctx.createGain();
+  player.gA.connect(ctx.destination);
+  player.gB.connect(ctx.destination);
+
+  player.a = ctx.createBufferSource();
+  player.a.buffer = t.orig;
+  player.a.connect(player.gA);
+
+  if (t.proc) {
+    player.b = ctx.createBufferSource();
+    player.b.buffer = t.proc;
+    player.b.connect(player.gB);
+  }
+
+  applyAB(false);
+
+  const off = Math.min(player.offset, t.orig.duration - 0.05);
+  player.t0 = ctx.currentTime - off;
+  player.a.start(0, Math.max(0, off));
+  if (player.b) player.b.start(0, Math.max(0, off));
+  player.a.onended = () => { if (player.on) { player.offset = 0; stopPlayback(); } };
+
+  player.on = true;
+  $('playBtn').textContent = 'Пауза';
+  tick();
+}
+
+function stopSources() {
+  for (const k of ['a', 'b']) {
+    if (player[k]) {
+      try { player[k].onended = null; player[k].stop(); } catch (e) { /* уже остановлен */ }
+      player[k] = null;
+    }
+  }
+}
+
+function stopPlayback() {
+  if (player.on && player.ctx) player.offset = player.ctx.currentTime - player.t0;
+  stopSources();
+  player.on = false;
+  cancelAnimationFrame(player.raf);
+  const btn = $('playBtn');
+  if (btn) btn.textContent = 'Слушать';
+}
+
+function tick() {
+  const t = state.tracks.find((x) => x.id === state.activeId);
+  if (!t || !player.on) return;
+  const pos = player.ctx.currentTime - player.t0;
+  const dur = t.orig.duration;
+  const pct = Math.max(0, Math.min(1, pos / dur));
+  $('seekFill').style.width = (pct * 100).toFixed(2) + '%';
+  $('seek').setAttribute('aria-valuenow', String(Math.round(pct * 100)));
+  const m = Math.floor(pos / 60), s = Math.floor(pos % 60);
+  $('time').textContent = m + ':' + String(s).padStart(2, '0');
+  player.raf = requestAnimationFrame(tick);
+}
+
+$('playBtn').addEventListener('click', () => {
+  if (player.on) stopPlayback();
+  else startPlayback();
+});
+
+$('abA').addEventListener('click', () => {
+  state.ab = 'a';
+  $('abA').classList.add('is-on');
+  $('abB').classList.remove('is-on');
+  applyAB(true);
+});
+$('abB').addEventListener('click', () => {
+  state.ab = 'b';
+  $('abB').classList.add('is-on');
+  $('abA').classList.remove('is-on');
+  applyAB(true);
+});
+
+$('levelMatch').addEventListener('change', (e) => {
+  state.levelMatch = e.target.checked;
+  applyAB(true);
+});
+
+$('seek').addEventListener('click', (e) => {
+  const t = state.tracks.find((x) => x.id === state.activeId);
+  if (!t) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+  player.offset = pct * t.orig.duration;
+  $('seekFill').style.width = (pct * 100).toFixed(2) + '%';
+  if (player.on) { stopSources(); player.on = false; startPlayback(); }
+});
+
+$('seek').addEventListener('keydown', (e) => {
+  const t = state.tracks.find((x) => x.id === state.activeId);
+  if (!t) return;
+  const step = e.shiftKey ? 15 : 5;
+  let d = 0;
+  if (e.key === 'ArrowRight') d = step;
+  else if (e.key === 'ArrowLeft') d = -step;
+  else return;
+  e.preventDefault();
+  const cur = player.on ? player.ctx.currentTime - player.t0 : player.offset;
+  player.offset = Math.max(0, Math.min(t.orig.duration - 0.05, cur + d));
+  $('seekFill').style.width = ((player.offset / t.orig.duration) * 100).toFixed(2) + '%';
+  if (player.on) { stopSources(); player.on = false; startPlayback(); }
+});
+
+/* ============================================================
+   11. Старт
+   ============================================================ */
+
+window.addEventListener('resize', () => drawScope());
+syncControls();
+markPresetCustom();
+renderTracks();
+drawScope();
+updateReadout();
+
+</script>
+</body>
+</html>
