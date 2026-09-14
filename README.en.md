@@ -40,39 +40,7 @@ The loudness meter has been checked against the standard's calibration test: a 9
 You can open `en.html` (or `ru.html`) straight from the file, but serving it is more reliable:
 
 ```
-python3 -m http.server 8080
-```
 
-Then visit `http://localhost:8080`.
-
-## Publishing to GitHub Pages
-
-1. Create a repository and push the folder's contents to the root
-2. Settings → Pages → Source: Deploy from a branch
-3. Branch: `main`, folder `/ (root)`
-4. Within a minute you'll have an address like `https://<username>.github.io/airband/`
-
-No build step, no dependencies.
-
-## Local Python version
-
-The `python/` folder holds a command-line version. It does the same job to a higher standard, and can do things the browser can't:
-
-- envelope following — the level of the new top end is derived from the spectral slope below the cutoff and moves with the music
-- linear-phase filters instead of biquads
-- tonal matching against a reference track
-- album-wide normalisation: one shared offset instead of levelling each track on its own
-- batch processing of whole folders, PNG reports, a DSP self-test
-
-```
-cd python
-pip install numpy scipy
-python airband.py album/ -o mastered/ --album --target -14
-```
-
-Details are in `python/README.md`.
-
-The browser version is for a quick check and for seeing the cliff with your own eyes. Python is for albums and final mastering.
 
 ## Structure
 
