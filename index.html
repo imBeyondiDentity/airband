@@ -1,13 +1,10 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Airband</title>
-<meta name="description" content="Airband — restore the top end cut from Suno exports. Choose a language.">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<title>iDentity Prompt Engine</title>
+<meta name="description" content="iDentity Prompt Engine — Music DNA Suno prompt engine. Choose a language.">
 <style>
   :root {
     --bg: #0F1313;
@@ -16,96 +13,32 @@
     --text: #E8E6E3;
     --text-muted: #B7B0A7;
     --text-dim: #9E9589;
-    --font-display: "Playfair Display", "Georgia", serif;
-    --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+    --font-display: Georgia, "Iowan Old Style", "Palatino Linotype", "Times New Roman", serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   }
   * { box-sizing: border-box; }
-  html, body {
-    margin: 0;
-    height: 100%;
-    background: var(--bg);
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-    -webkit-font-smoothing: antialiased;
-  }
-  body {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 32px 20px;
-  }
-  main {
-    width: 100%;
-    max-width: 420px;
-    text-align: center;
-  }
-  .eyebrow {
-    font-size: 12.5px;
-    font-weight: 500;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    color: var(--accent);
-    margin: 0 0 14px;
-  }
-  h1 {
-    font-family: var(--font-display);
-    font-weight: 900;
-    font-size: clamp(44px, 12vw, 64px);
-    line-height: 0.95;
-    letter-spacing: -0.01em;
-    color: var(--text);
-    margin: 0 0 40px;
-  }
-  .langs {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-  .lang {
-    display: block;
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 18px 20px;
-    text-align: left;
-    text-decoration: none;
-    color: var(--text-muted);
-    font-size: 15px;
-    transition: border-color .15s ease;
-  }
-  .lang:hover, .lang:focus-visible {
-    border-color: var(--accent);
-    outline: none;
-  }
-  .lang b {
-    color: var(--accent);
-    font-weight: 600;
-  }
-  footer {
-    margin-top: 40px;
-    font-size: 12.5px;
-    color: var(--text-dim);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-  }
-  footer .dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--accent);
-  }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text-muted); font-family: var(--font-mono); -webkit-font-smoothing: antialiased; }
+  body { display: flex; align-items: center; justify-content: center; padding: 32px 20px; }
+  main { width: 100%; max-width: 420px; text-align: center; }
+  .eyebrow { font-size: 12.5px; font-weight: 500; letter-spacing: 0.22em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--font-display); font-weight: 900; font-size: clamp(44px, 12vw, 64px); line-height: 0.95; letter-spacing: -0.01em; color: var(--text); margin: 0 0 40px; }
+  .langs { display: flex; flex-direction: column; gap: 12px; padding-top: 22px; }
+  .lang { display: block; border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; text-align: left; text-decoration: none; color: var(--text-muted); font-size: 15px; transition: border-color .15s ease; }
+  .lang:hover, .lang:focus-visible { border-color: var(--accent); outline: none; }
+  .lang b { color: var(--accent); font-weight: 600; }
+  footer { margin-top: 40px; font-size: 12.5px; color: var(--text-dim); display: flex; align-items: center; justify-content: center; gap: 8px; }
+  footer .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 </style>
 </head>
 <body>
 <main>
-  <p class="eyebrow">Audio Restoration Engine</p>
-  <h1>Airband</h1>
+  <p class="eyebrow">iDentity Prompt Engine</p>
+  <h1>Music DNA</h1>
   <div class="langs">
-    <a class="lang" href="en.html"><b>English</b> — Suno track restoration</a>
-    <a class="lang" href="ru.html"><b>Русский</b> — восстановление треков Suno</a>
+    <a class="lang" href="en.html"><b>English</b> — Suno prompt engine</a>
+    <a class="lang" href="ru.html"><b>Русский</b> — движок Suno-промптов</a>
   </div>
-  <footer><span class="dot"></span> Airband</footer>
+  <footer><span class="dot"></span> iDentity Prompt Engine</footer>
 </main>
 </body>
 </html>
