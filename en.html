@@ -427,6 +427,14 @@ p { margin: 0 0 12px; }
   margin-bottom: 6px;
 }
 
+.chip-auto {
+  grid-column: 1 / -1;
+}
+.chip-auto[disabled] {
+  opacity: .4;
+  cursor: default;
+}
+
 .chip {
   background: var(--panel-2);
   border: 1px solid var(--line);
@@ -661,6 +669,7 @@ footer {
 
       <h3 class="subsection-label">Presets</h3>
       <div class="presets" id="presets">
+        <button class="chip chip-auto" id="autoChip" data-preset="auto" type="button" disabled>Auto — from track analysis</button>
         <button class="chip is-on" data-preset="mp3" type="button">MP3 restoration</button>
         <button class="chip" data-preset="wav" type="button">WAV polish</button>
         <button class="chip" data-preset="air" type="button">Top end only</button>
@@ -888,10 +897,22 @@ function detectCutoff(db, sampleRate) {
   }
   const f = cutBin * binHz;
   const full = f > nyq * 0.9;
+  const hz = Math.max(7000, Math.min(f, nyq * 0.985));
+
+  // Крутизна обрыва: перепад за треть октавы над точкой среза.
+  // Нужна для авто-параметров (Master Assistant) — жёсткий MP3-срез
+  // и мягкий WAV-скат требуют разной агрессии восстановления.
+  const aboveLo = Math.ceil(hz / binHz) + 1;
+  const aboveHi = Math.min(db.length - 1, Math.floor(Math.min(hz * 1.26, nyq * 0.99) / binHz));
+  let steepSum = 0, steepN = 0;
+  for (let i = aboveLo; i <= aboveHi; i++) { steepSum += db[i]; steepN++; }
+  const steepnessDb = steepN > 0 ? ref - (steepSum / steepN) : 0;
+
   return {
-    hz: Math.max(7000, Math.min(f, nyq * 0.985)),
+    hz,
     fullRange: full,
-    ref
+    ref,
+    steepnessDb
   };
 }
 
@@ -904,6 +925,42 @@ function energyAbove(db, sampleRate, fromHz) {
   let s = 0;
   for (let i = lo; i <= hi; i++) s += Math.pow(10, db[i] / 10);
   return 10 * Math.log10(s / (hi - lo + 1) + 1e-20);
+}
+
+/* Насколько 250/* Насколько 250–400 Гц реально выпирает над серединой (600–2500 Гц).
+   Положительное — там правда лишнее; ноль или меньше — резать нечего. */
+function mudExcessDb(db, sampleRate) {
+  return bandEnergyDb(db, sampleRate, 250, 400) - bandEnergyDb(db, sampleRate, 600, 2500);
+}
+
+function bandEnergyDb(db, sampleRate, lo, hi) {
+  const binHz = sampleRate / FFT_SIZE;
+  const i0 = Math.max(1, Math.floor(lo / binHz));
+  const i1 = Math.min(db.length - 1, Math.floor(hi / binHz));
+  if (i1 <= i0) return -120;
+  let s = 0;
+  for (let i = i0; i <= i1; i++) s += Math.pow(10, db[i] / 10);
+  return 10 * Math.log10(s / (i1 - i0 + 1) + 1e-20);
+}
+
+/* Сколько в треке уже есть стерео-информации/* Сколько в треке уже есть стерео-информации: RMS(side) / RMS(mid).
+   0 — чистое моно, ~1 и выше — уже широкий материал. */
+function stereoWidthRatio(buffer) {
+  if (buffer.numberOfChannels < 2) return 0;
+  const L = buffer.getChannelData(0), R = buffer.getChannelData(1);
+  let midSq = 0, sideSq = 0;
+  const step = Math.max(1, Math.floor(L.length / 200000));
+  let n = 0;
+  for (let i = 0; i < L.length; i += step) {
+    const mid = (L[i] + R[i]) * 0.5;
+    const side = (L[i] - R[i]) * 0.5;
+    midSq += mid * mid;
+    sideSq += side * side;
+    n++;
+  }
+  const midRms = Math.sqrt(midSq / n + 1e-20);
+  const sideRms = Math.sqrt(sideSq / n + 1e-20);
+  return sideRms / (midRms + 1e-20);
 }
 
 /* ============================================================
@@ -1161,6 +1218,7 @@ function truePeakDb(chans) {
 function limit(chans, ceilingLin, sampleRate) {
   const len = chans[0].length;
   const look = Math.max(1, Math.round(0.002 * sampleRate));
+  const hold = Math.max(1, Math.round(0.04 * sampleRate));
   const req = new Float32Array(len);
   for (let i = 0; i < len; i++) {
     let p = 0;
@@ -1173,30 +1231,51 @@ function limit(chans, ceilingLin, sampleRate) {
 
   // Скользящий минимум по окну [i, i+look] через монотонную деку.
   // Дека не длиннее окна, поэтому держим её в кольцевом буфере.
-  const g = new Float32Array(len);
-  const cap = look + 2;
-  const dq = new Int32Array(cap);
-  let head = 0, tail = 0, size = 0;
-  for (let i = len - 1; i >= 0; i--) {
-    while (size > 0 && req[dq[(tail - 1 + cap) % cap]] >= req[i]) {
-      tail = (tail - 1 + cap) % cap;
-      size--;
+  const gLook = new Float32Array(len);
+  {
+    const cap = look + 2;
+    const dq = new Int32Array(cap);
+    let head = 0, tail = 0, size = 0;
+    for (let i = len - 1; i >= 0; i--) {
+      while (size > 0 && req[dq[(tail - 1 + cap) % cap]] >= req[i]) {
+        tail = (tail - 1 + cap) % cap;
+        size--;
+      }
+      dq[tail] = i;
+      tail = (tail + 1) % cap;
+      size++;
+      while (dq[head] > i + look) { head = (head + 1) % cap; size--; }
+      gLook[i] = req[dq[head]];
     }
-    dq[tail] = i;
-    tail = (tail + 1) % cap;
-    size++;
-    while (dq[head] > i + look) {
-      head = (head + 1) % cap;
-      size--;
+  }
+
+  // Hold: обратный минимум по [i-hold, i], поверх результата lookahead —
+  // после пика гейн не начинает отпускать немедленно, а держится на
+  // дне ещё `hold` отсчётов.
+  const gHold = new Float32Array(len);
+  {
+    const cap = hold + 2;
+    const dq = new Int32Array(cap);
+    let head = 0, tail = 0, size = 0;
+    for (let i = 0; i < len; i++) {
+      while (size > 0 && gLook[dq[(tail - 1 + cap) % cap]] >= gLook[i]) {
+        tail = (tail - 1 + cap) % cap;
+        size--;
+      }
+      dq[tail] = i;
+      tail = (tail + 1) % cap;
+      size++;
+      while (dq[head] < i - hold) { head = (head + 1) % cap; size--; }
+      gHold[i] = gLook[dq[head]];
     }
-    g[i] = req[dq[head]];
   }
 
   const rel = Math.exp(-1 / (0.12 * sampleRate));
   let s = 1;
   for (let i = 0; i < len; i++) {
-    const t = g[i];
+    const t = gHold[i];
     s = t < s ? t : s * rel + t * (1 - rel);
+    s = Math.min(s, req[i]);
     for (let c = 0; c < chans.length; c++) {
       let v = chans[c][i] * s;
       if (v > ceilingLin) v = ceilingLin;
@@ -1264,6 +1343,31 @@ const PRESETS = {
   air:  { air: 0.60, drive: 0.50, shelf: 2.5, mud: 0.0,  width: 0.00, glue: 0 },
   flat: { air: 0.00, drive: 0.00, shelf: 0.0, mud: 0.0,  width: 0.00, glue: 0 }
 };
+
+/* Master Assistant: параметры считаются из самого трека, а не берутся
+   готовыми из PRESETS. Та же логика, что в Python-версии — три вещи
+   меряются по-настоящему:
+   - крутизна обрыва -> насколько агрессивно достраивать верх;
+   - реальный избыток на 250-400 Гц -> чистить муть или нет;
+   - существующая стерео-ширина -> сколько ещё досыпать. */
+function computeAutoParams(t) {
+  const cut = t.cut;
+  let air = 0, drive = 0, shelf = 0;
+  if (!cut.fullRange) {
+    const k = Math.max(0, Math.min(1, (cut.steepnessDb - 25) / 65));
+    air = 0.40 + 0.35 * k;
+    drive = 0.35 + 0.30 * k;
+    shelf = 1.5 + 1.5 * k;
+  }
+
+  const excess = mudExcessDb(t.specA, t.orig.sampleRate);
+  const mud = -Math.max(0, Math.min(4, excess * 0.6));
+
+  const widthNow = stereoWidthRatio(t.orig);
+  const width = Math.max(0, Math.min(0.5, 0.45 - 0.35 * widthNow));
+
+  return { air, drive, shelf, mud, width, glue: 0 };
+}
 
 const state = {
   tracks: [],
@@ -1618,6 +1722,7 @@ function updateReadout() {
   $('scopeEmpty').hidden = has;
   $('scopeLegend').hidden = !has;
   $('transport').hidden = !(t && t.orig);
+  $('autoChip').disabled = !has;
   if (!has) return;
 
   $('rCut').textContent = t.cut.fullRange
@@ -1695,6 +1800,14 @@ function markPresetCustom() {
 
 document.querySelectorAll('.chip').forEach((chip) => {
   chip.addEventListener('click', () => {
+    if (chip.dataset.preset === 'auto') {
+      const t = state.tracks.find((x) => x.id === state.activeId);
+      if (!t || !t.specA) return;
+      Object.assign(state.params, computeAutoParams(t));
+      syncControls();
+      document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('is-on', c === chip));
+      return;
+    }
     Object.assign(state.params, PRESETS[chip.dataset.preset]);
     syncControls();
     markPresetCustom();
