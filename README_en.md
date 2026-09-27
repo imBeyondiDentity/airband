@@ -1,5 +1,7 @@
 # Airband
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A browser tool for restoring the top end cut from tracks generated in Suno.
 
 Runs entirely client-side via the Web Audio API. No backend, no uploads — files never leave the device. Deploys to GitHub Pages as static files.
@@ -105,3 +107,16 @@ Start with the **Auto** preset — it shows up once a file is loaded and works o
 If it sounds too aggressive or too gentle, switch to a fixed preset and compare. If the top end starts to hiss or the cymbals get a "foam" on them, pull back harmonic density before amount. Density controls how dirty the harmonics get; amount only controls their level.
 
 Target loudness: −14 LUFS for Spotify and Apple Music, −11 for your own sets and a denser sound.
+
+## Licence
+
+MIT — see [`LICENCE`](LICENSE). Use it, fork it, change it, sell a version
+you've built on top of it if someone's buying. The only condition is
+keeping the copyright notice and licence text in copies.
+
+On the hold-stage limiter: the implementation is written from scratch,
+but the idea (a plateau after the peak, plus a guarantee against
+overshoot) was checked against the Hyrax limiter from
+[Matchering](https://github.com/sergree/matchering) (itself GPLv3
+licensed). No code was copied — only the concept, which copyright
+doesn't cover — so Airband's MIT licence isn't compromised by that.
