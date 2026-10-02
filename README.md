@@ -71,13 +71,6 @@ The browser version is for a quick check and for seeing the cliff with your own 
 
 ## Structure
 
-```
-index.html   language picker (modelled on iDentity Prompt Engine)
-en.html      the whole tool in English — markup, styles and DSP in one file
-ru.html      the whole tool in Russian, same thing
-python/      the command-line version
-```
-
 Each HTML file is self-contained: CSS and JS are inlined, no external links. The browser part used to be three files (`index.html` + `app.css` + `app.js`) — opened any way other than through a real web server, relative links don't always resolve (a preview inside a chat interface, for instance, opens files separately and the styles never load), so now every page is a single file with no exceptions.
 
 The `index.html` router scheme only works in full when all three files sit together on real hosting (GitHub Pages, any web server) — that's what lets the links to `en.html`/`ru.html` resolve. A file opened on its own (through a chat preview, say) will still open and work by itself, but following a link to another file in that context may not work — that's a limitation of how it's being previewed, not of the file itself.
