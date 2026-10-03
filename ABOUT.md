@@ -1,68 +1,75 @@
 # Airband
 
-Браузерный инструмент для восстановления срезанного верха в треках, сгенерированных в Suno.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Работает целиком на клиенте через Web Audio API. Никакого бэкенда, никаких загрузок на сервер — файлы не покидают устройство. Разворачивается на GitHub Pages как статика.
+[Русская версия](ABOUT_ru.md)
 
-## Зачем
+A browser tool for restoring the top end cut from tracks generated in Suno.
 
-Suno отдаёт материал с жёстким обрывом спектра: у MP3 примерно на 15.5–16 кГц, у WAV чуть выше. Выше этой линии сигнала нет вообще. Поэтому обычный эквалайзер не помогает — он поднимает уровень там, где поднимать нечего, и вытаскивает только шум кодека.
+Runs entirely client-side via the Web Audio API. No backend, no uploads — files never leave the device. Deploys to GitHub Pages as static files.
 
-Airband идёт другим путём: берёт полосу прямо под точкой обрыва, прогоняет её через мягкое несимметричное насыщение и получает вторую и третью гармоники. Они попадают ровно в пустую зону. Всё, что упало ниже точки среза, отрезается, новый материал подмешивается обратно к оригиналу. В верхнем регистре появляется реальная энергия, коррелированная с исходным сигналом, а не подъём шумовой полки.
+## Why
 
-## Что делает
+Suno hands back material with a hard spectral cliff: around 15.5–16 kHz for MP3, a touch higher for WAV. There's no signal at all above that line, so a regular EQ can't help — it just raises the level where there's nothing to raise, pulling up codec noise instead.
 
-- Находит точку среза автоматически, по спектру всего трека, а не одного окна
-- Досинтезирует гармоники выше неё (настраиваемое количество и плотность)
-- Шельф «воздуха» от 11 кГц
-- Чистка нижней середины на 300 Гц
-- Расширение стерео только выше 2.5 кГц, в mid/side — низ остаётся моно
-- Опциональная склейка компрессором
-- Замер громкости по ITU-R BS.1770-4 с гейтингом, нормализация к цели
-- Лимитер с упреждением 2 мс, потолок −1 дБ
-- Экспорт 24-битного WAV с TPDF-дизерингом
-- Пакетная обработка: кидаешь весь альбом, получаешь всё с одинаковой громкостью
-- Мгновенное A/B на одной позиции, с опцией выравнивания громкости, чтобы «громче» не читалось как «лучше»
+Airband takes a different route: it takes the band right under the cliff, runs it through gentle asymmetric saturation, and gets second and third harmonics out of it. Those land exactly in the empty zone. Everything that fell below the cutoff point gets filtered out of that new material, and what's left gets mixed back into the original. Real energy appears in the top end, correlated with the source signal, rather than a raised noise floor.
 
-Измеритель громкости проверен по калибровочному тесту стандарта: синус 997 Гц на 0 dBFS в одном канале читается как −3.05 LUFS при эталоне −3.01.
+## What it does
 
-## Пресеты
+- Finds the cutoff point automatically, from the spectrum of the whole track rather than a single window
+- Resynthesises harmonics above it (adjustable amount and density)
+- An "air" shelf from 11 kHz
+- Low-mid cleanup at 300 Hz
+- Stereo widening above 2.5 kHz only, in mid/side — the low end stays mono
+- Optional compressor glue
+- Loudness measurement per ITU-R BS.1770-4 with gating, normalised to a target
+- A 2 ms lookahead limiter with a 40 ms hold stage, −1 dB ceiling
+- 24-bit WAV export with TPDF dithering
+- Batch processing: drop a whole album in, get everything back at matching loudness
+- Instant A/B at the same playhead position, with a level-matching option so "louder" doesn't read as "better"
+- **Suno shimmer cleanup** — before resynthesis, narrow flickering artefacts in the 5–14 kHz range are suppressed so the exciter doesn't build new harmonics out of them. The low end is untouched, and the centre of the mix is cleaned more gently than the sides
+- **Auto** — instead of a fixed preset, analyse the actual track and get parameters worked out from it (cutoff steepness, real mud excess, existing stereo width) rather than guessed blind
 
-| Пресет | Для чего |
+The loudness meter has been checked against the standard's calibration test: a 997 Hz sine at 0 dBFS in a single channel reads as −3.05 LUFS against a −3.01 reference.
+
+## Presets
+
+| Preset | What it's for |
 |---|---|
-| Восстановление MP3 | экспорт 128 kbps, обрыв около 15.8 кГц |
-| Полировка WAV | Pro/Premier, срез выше и мягче |
-| Только верх | верх и ширина, без чистки середины |
-| Только громкость | нормализация и лимитер, без обработки спектра |
+| Auto | parameters worked out from analysing the actual track (cutoff, mud, width, amount of shimmer) — becomes available once a file is loaded |
+| MP3 restoration | 128 kbps exports, cutoff around 15.8 kHz |
+| WAV polish | Pro/Premier exports, higher and softer cutoff |
+| Top end only | top end and width, no mid cleanup |
+| Loudness only | normalisation and limiting, no spectral processing |
 
-## Запуск локально
+## Running it locally
 
-Открыть `index.html` можно прямо из файла, но надёжнее поднять статику:
+You can open `en.html` (or `ru.html`) straight from the file, but serving it is more reliable:
 
 ```
 python3 -m http.server 8080
 ```
 
-Дальше `http://localhost:8080`.
+Then visit `http://localhost:8080`.
 
-## Публикация на GitHub Pages
+## Publishing to GitHub Pages
 
-1. Создать репозиторий и залить содержимое папки в корень
+1. Create a repository and push the folder's contents to the root
 2. Settings → Pages → Source: Deploy from a branch
-3. Branch: `main`, папка `/ (root)`
-4. Через минуту адрес вида `https://<ник>.github.io/airband/`
+3. Branch: `main`, folder `/ (root)`
+4. Within a minute you'll have an address like `https://<username>.github.io/airband/`
 
-Сборка не нужна, зависимостей нет.
+No build step, no dependencies.
 
-## Локальная версия на Python
+## Local Python version
 
-В папке `python/` лежит версия для командной строки. Она делает то же самое, но качественнее, и умеет то, чего в браузере не сделать:
+The `python/` folder holds a command-line version. It does the same job to a higher standard, and can do things the browser can't:
 
-- слежение за огибающей — уровень нового верха выводится из наклона спектра под срезом и меняется вместе с музыкой
-- фильтры с линейной фазой вместо биквадов
-- подгонка тонального баланса под эталонный трек
-- альбомная нормализация: общий сдвиг вместо выравнивания каждого трека по отдельности
-- пакетная обработка папок, отчёты в PNG, самопроверка DSP
+- envelope following — the level of the new top end is derived from the spectral slope below the cutoff and moves with the music
+- linear-phase filters instead of biquads
+- tonal matching against a reference track
+- album-wide normalisation: one shared offset instead of levelling each track on its own
+- batch processing of whole folders, PNG reports, a DSP self-test
 
 ```
 cd python
@@ -70,34 +77,49 @@ pip install numpy scipy
 python airband.py album/ -o mastered/ --album --target -14
 ```
 
-Подробности в `python/README.md`.
+Details are in `python/README.md`.
 
-Браузерная версия нужна для быстрой проверки и для того, чтобы глазами увидеть обрыв. Python — для альбомов и финального мастеринга.
+The browser version is for a quick check and for seeing the cliff with your own eyes. Python is for albums and final mastering.
 
-## Структура
+## Structure
 
 ```
-index.html   выбор языка (по образцу iDentity Prompt Engine)
-en.html      инструмент целиком на английском — разметка, стили и DSP в одном файле
-ru.html      инструмент целиком на русском, то же самое
-python/      версия для командной строки
+index.html   language picker (modelled on iDentity Prompt Engine)
+en.html      the whole tool in English — markup, styles and DSP in one file
+ru.html      the whole tool in Russian, same thing
+python/      the command-line version
 ```
 
-Каждый HTML-файл самодостаточен: CSS и JS зашиты внутрь, внешних ссылок нет. Раньше браузерная часть была тремя файлами (`index.html` + `app.css` + `app.js`) — при открытии не через настоящий веб-сервер относительные ссылки не всегда резолвятся (например, предпросмотр внутри чата открывает файлы по отдельности, и стили не подтягиваются), так что теперь каждая страница — один файл без исключений.
+Each HTML file is self-contained: CSS and JS are inlined, no external links. The browser part used to be three files (`index.html` + `app.css` + `app.js`) — opened any way other than through a real web server, relative links don't always resolve (a preview inside a chat interface, for instance, opens files separately and the styles never load), so now every page is a single file with no exceptions.
 
-Схема с `index.html` как роутером работает целиком только тогда, когда все три файла лежат рядом на настоящем хостинге (GitHub Pages, любой веб-сервер) — тогда ссылки на `en.html`/`ru.html` резолвятся сервером. Открытый по отдельности файл (например, через предпросмотр в чате) откроется и будет работать сам по себе, но переход по ссылке в другой файл в таком контексте может не сработать — это ограничение способа предпросмотра, не самого файла.
+The `index.html` router scheme only works in full when all three files sit together on real hosting (GitHub Pages, any web server) — that's what lets the links to `en.html`/`ru.html` resolve. A file opened on its own (through a chat preview, say) will still open and work by itself, but following a link to another file in that context may not work — that's a limitation of how it's being previewed, not of the file itself.
 
-Для GitHub Pages: закинуть все три файла в корень репозитория, зайти на `имя.github.io/repo/` — попадёшь на выбор языка.
+For GitHub Pages: drop all three files in the repository root, visit `username.github.io/repo/`, and you'll land on the language picker.
 
-## Ограничения
+## Limitations
 
-- Из глухого материала нельзя достать то, чего в нём не было. Гармоники — это правдоподобная реконструкция, а не оригинальная запись.
-- На треках длиннее шести-семи минут обработка на телефоне может занять полминуты и больше.
-- Safari требует версию 14.1 и новее.
-- Дизеринг при экспорте использует `Math.random()`. Для мастеринга это достаточно, для метрологии — нет.
+- You can't get back what was never there. The harmonics are a plausible reconstruction, not the original recording.
+- On tracks longer than six or seven minutes, processing on a phone can take half a minute or more.
+- Safari needs version 14.1 or newer.
+- Dithering on export uses `Math.random()`. Fine for mastering, not for metrology.
 
-## Как настраивать
+## How to tune it
 
-Начни с пресета, слушай A/B с включённым выравниванием громкости. Если верх зашипел или на тарелках появилась «пена» — убавляй плотность гармоник раньше, чем количество. Плотность отвечает за то, насколько грязными получаются гармоники, количество — только за их уровень.
+Start with the **Auto** preset — it shows up once a file is loaded and works out its parameters from the track itself: cutoff steepness, real mud excess at 250–400 Hz, existing stereo width. The idea comes from the Master Assistant in the open-source plugin [oXygen](https://github.com/Wamphyre/oXygen): it listens to the input and writes its own settings rather than asking you to guess a preset. From there, tweak any control by hand as a starting point.
 
-Целевая громкость −14 LUFS для Spotify и Apple Music, −11 для своих сетов и плотного звука.
+If it sounds too aggressive or too gentle, switch to a fixed preset and compare. If the top end starts to hiss or the cymbals get a "foam" on them, pull back harmonic density before amount. Density controls how dirty the harmonics get; amount only controls their level.
+
+Target loudness: −14 LUFS for Spotify and Apple Music, −11 for your own sets and a denser sound.
+
+## Licence
+
+MIT — see [`LICENCE`](LICENSE). Use it, fork it, change it, sell a version
+you've built on top of it if someone's buying. The only condition is
+keeping the copyright notice and licence text in copies.
+
+On the hold-stage limiter: the implementation is written from scratch,
+but the idea (a plateau after the peak, plus a guarantee against
+overshoot) was checked against the Hyrax limiter from
+[Matchering](https://github.com/sergree/matchering) (itself GPLv3
+licensed). No code was copied — only the concept, which copyright
+doesn't cover — so Airband's MIT licence isn't compromised by that.
