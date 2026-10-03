@@ -1,19 +1,19 @@
-# Airband для командной строки
+# Airband for the command line
 
-Локальная версия. Делает то же, что браузерная, но качественнее и умеет то, чего в браузере не сделать: слежение за огибающей, подгонку под эталонный трек, альбомную нормализацию и пакетную обработку папок.
+The local version. It does the same job as the browser one, more precisely, and covers what the browser version doesn't: matching to a reference track, album-wide normalisation, batch processing of whole folders, and cleaning up Suno's shimmer.
 
-## Установка
+## Installation
 
 ```
 pip install numpy scipy
 ```
 
-Всё. Остальное опционально:
+That's it. Everything else is optional:
 
-- `soundfile` — чтение файлов без ffmpeg
-- `matplotlib` — ключ `--report`
+- `soundfile` — reading files without ffmpeg
+- `matplotlib` — for the `--report` switch
 
-Если ни `soundfile`, ни ffmpeg в системе нет, читать будет нечем. ffmpeg ставится так:
+If neither `soundfile` nor ffmpeg is installed, there's nothing to read files with. Installing ffmpeg:
 
 ```
 brew install ffmpeg      # macOS
@@ -21,108 +21,121 @@ apt install ffmpeg       # Debian, Ubuntu
 winget install ffmpeg    # Windows
 ```
 
-Запись 24-битного WAV написана на чистом numpy, для экспорта сторонние библиотеки не нужны никогда.
+The 24-bit WAV writer is pure numpy, so exporting never needs a third-party library.
 
-## Как пользоваться
+## Usage
 
-Один трек:
+A single track:
 
 ```
 python airband.py track.mp3
 ```
 
-Результат ляжет в `out/track (airband).wav`.
+The result lands in `out/track (airband).wav`.
 
-Целый альбом с общей громкостью:
+A whole album at a shared loudness:
 
 ```
 python airband.py album/ -o mastered/ --album --target -14
 ```
 
-Под тональный баланс эталона, с картинкой спектра:
+Matched to a reference track's tonal balance, with a spectrum image:
 
 ```
-python airband.py track.wav --reference любимый_трек.flac --report
+python airband.py track.wav --reference favourite_track.flac --report
 ```
 
-Только посмотреть, что там со срезом и громкостью, ничего не писать:
+Just measure the cutoff and loudness, without writing anything:
 
 ```
 python airband.py album/ --analyze
 ```
 
-## Ключи
+## Options
 
-| Ключ | Что делает |
+| Option | What it does |
 |---|---|
 | `--preset` | `auto`, `mp3-rescue`, `wav-polish`, `air-only`, `flat` |
-| `--air` | сколько верха достроить; 1.0 — естественное продолжение спектра |
-| `--drive` | плотность гармоник, 0..1 |
-| `--shelf` | шельф воздуха от 11 кГц, дБ |
-| `--mud` | правка на 300 Гц, дБ |
-| `--width` | ширина стерео выше 2.5 кГц, 0..1 |
-| `--no-follow` | не следить за огибающей, класть верх ровным слоем |
-| `--cutoff` | задать точку среза вручную, Гц |
-| `--target` | целевая громкость, LUFS |
-| `--ceiling` | потолок тру-пика, дБ |
-| `--album` | один сдвиг на весь альбом |
-| `--reference` | трек-эталон для тонального баланса |
-| `--ref-strength` | 0..1, насколько сильно подгонять |
-| `--report` | PNG со спектрами до и после |
-| `--analyze` | только замер |
+| `--air` | how much top end to rebuild; 1.0 is the natural continuation of the spectrum |
+| `--drive` | harmonic density, 0..1 |
+| `--shelf` | air shelf from 11 kHz, dB |
+| `--mud` | adjustment at 300 Hz, dB |
+| `--width` | stereo width above 2.5 kHz, 0..1 |
+| `--deshimmer` | Suno shimmer cleanup before resynthesis, 0..1 (0 — off) |
+| `--no-follow` | don't follow the envelope; lay the top end down as a flat layer |
+| `--cutoff` | set the cutoff point by hand, Hz |
+| `--target` | target loudness, LUFS |
+| `--ceiling` | true-peak ceiling, dB |
+| `--album` | one shared offset for the whole album |
+| `--reference` | reference track for tonal balance |
+| `--ref-strength` | 0..1, how strongly to match |
+| `--report` | PNG of the spectra before and after |
+| `--analyze` | measurement only |
 
-## Чем отличается от браузерной версии
+## What's inside
 
-**Слежение за огибающей.** Наклон спектра меряется по двум полосам под точкой среза и экстраполируется выше неё. Получается уровень, который был бы у материала, если бы его не обрезали, — и новый верх выводится именно на него, кадр за кадром. Воздух дышит вместе с музыкой, а не лежит ровным шипящим слоем. Отключается ключом `--no-follow`.
+Envelope following and the FIR filter on the exciter's output are now in the browser version too — it has caught up with this one almost entirely on top-end restoration quality. What remains exclusive to this version: an FIR filter on the exciter's input as well, its own oversampling for the saturation stage, reference matching, album mode, an 8× final peak check, and the de-shimmer (still being ported to the browser).
 
-На синтетическом тесте, где верх режется на 16 кГц, восстановленный спектр отличается от докодекового не больше чем на 2.2 дБ во всей полосе 17–21 кГц. Проверить можно самому: `python selftest.py`.
+**Envelope following.** The spectral slope is measured across two bands below the cutoff and extrapolated above it. That gives the level the material would have had if it hadn't been cut off — and the new top end is set to exactly that, frame by frame. The air breathes with the music rather than sitting as a flat, hissy layer. Switch it off with `--no-follow`.
 
-**Фильтры с линейной фазой.** Полосы делятся FIR-фильтрами, а не биквадами. Верх не размазывается по времени, транзиенты на тарелках остаются острыми.
+On a synthetic test where the top end is cut at 16 kHz, the restored spectrum stays within 2.2 dB of the pre-codec original across the whole 17–21 kHz band. You can check this yourself: `python selftest.py`.
 
-**Честная передискретизация.** Насыщение считается на четырёхкратной частоте через полифазные фильтры scipy — алиасинг не долетает до слышимой полосы даже на максимальном драйве.
+**Linear-phase filters.** Bands are split with FIR filters rather than biquads. The top end doesn't smear in time, and cymbal transients stay sharp.
 
-**Подгонка под эталон.** `--reference` считает сглаженное на 1/6 октавы отношение спектров, вычитает средний уровень в 200–2000 Гц (правится форма, а не громкость), ограничивает коррекцию шестью децибелами и применяет её фильтром с линейной фазой. Это мастеринг по референсу, только без отдельной библиотеки.
+**Honest oversampling.** Saturation is computed at 4× the sample rate through scipy's polyphase filters — aliasing never reaches the audible range, even at maximum drive.
 
-**Единая палитра.** PNG-отчёт (`--report`) раскрашен в те же токены, что браузерная версия и iDentity Prompt Engine: тёплый почти чёрный фон, приглушённый серый для кривой «до», оранжевый акцент для «после». Открыв отчёт рядом с браузерным инструментом, не придётся гадать, что откуда.
+**Reference matching.** `--reference` takes the ratio of the two spectra smoothed to 1/6 of an octave, subtracts the average level across 200–2000 Hz (so it corrects the shape, not the loudness), caps the correction at six decibels, and applies it through a linear-phase filter. It's reference-based mastering without a separate library.
 
-**Альбомный режим.** Обычная нормализация выравнивает каждый трек по отдельности и убивает динамику альбома: тихая интерлюдия становится такой же громкой, как боевик. `--album` находит один общий сдвиг, выводит на цель самый громкий трек, а остальные сохраняют исходную расстановку.
+**One palette.** The PNG report (`--report`) uses the same colour tokens as the browser version and iDentity Prompt Engine: a warm near-black background, muted grey for the "before" curve, the orange accent for "after". Open the report next to the browser tool and there's no guessing which is which.
 
-**Точное попадание в цель.** Лимитер сам снижает громкость, поэтому одного прохода мало. Нормализация уточняется итеративно, промах меньше 0.1 дБ.
+**Album mode.** Ordinary normalisation levels each track on its own and flattens an album's dynamics: a quiet interlude ends up as loud as the heaviest track. `--album` finds one shared offset, brings the loudest track up to target, and leaves the rest in their original relationship.
 
-**Master Assistant (`--preset auto`).** Вместо готового набора чисел параметры считаются из самого трека:
+**Hitting the target precisely.** The limiter itself reduces loudness, so a single pass isn't enough. Normalisation is refined iteratively, to within 0.1 dB.
 
-- крутизна обрыва (уже есть в детекторе среза) определяет агрессию восстановления — жёсткий MP3-срез получает сильный досинтез, мягкий WAV-скат бережный, а если обрыва нет вовсе — досинтез выключается совсем, а не подмешивается вслепую;
-- реальный избыток на 250–400 Гц относительно середины (600–2500 Гц) определяет, резать ли муть и насколько — раньше это было фиксированные −2.5 дБ независимо от того, была ли муть на самом деле;
-- существующая стерео-ширина (RMS side/mid) определяет, сколько ещё ширины досыпать — уже широкому треку меньше, почти моно больше.
+**Master Assistant (`--preset auto`).** Instead of a fixed set of numbers, the parameters are worked out from the track itself:
 
-Идея — из обзора open-source мастеринг-инструментов, конкретно из Master Assistant в плагине [oXygen](https://github.com/Wamphyre/oXygen): он слушает вход и сам пишет настройки модулей вместо того, чтобы предлагать человеку угадывать пресет.
+- cutoff steepness (already measured by the cutoff detector) sets how aggressive the restoration is — a hard MP3 cliff gets strong resynthesis, a soft WAV rolloff gets a gentle one, and if there's no cutoff at all, resynthesis is switched off entirely rather than mixed in blind;
+- the real excess at 250–400 Hz relative to the mid band (600–2500 Hz) decides whether to clean up mud, and by how much — previously this was a fixed −2.5 dB whether there was any mud or not;
+- the existing stereo width (RMS side/mid) decides how much more width to add — less for an already wide track, more for a near-mono one;
+- the measured amount of shimmer sets the de-shimmer strength — a light safety pass for a clean track, stronger for a flickering one.
 
-**Лимитер с hold-стадией.** Сверено с лимитером Hyrax из [Matchering](https://github.com/sergree/matchering). У них после пика гейн держится внизу ещё некоторое время, прежде чем начать отпускать, — это не даёт лимитеру «дышать» слишком быстро на транзиентных материалах (барабаны, перкуссия). Раньше здесь была только lookahead-стадия без hold. Добавлен и hold (~40 мс по умолчанию), и математическая гарантия того, что сглаженный гейн никогда не превышает реально необходимый в моменте — раньше на этот случай был только грубый `clip()` постфактум. На тесте с одиночным транзиентом: жёсткий clip срабатывает на 0 сэмплов из 288000 (было — трек не проверялся на это вовсе).
+The idea comes from a survey of open-source mastering tools, specifically the Master Assistant in the [oXygen](https://github.com/Wamphyre/oXygen) plugin: it listens to the input and writes its own module settings rather than asking you to guess a preset.
 
-## Файлы
+**De-shimmer before the exciter.** Suno leaves narrow, flickering artefacts — "shimmer" — in roughly the 5–14 kHz range. Airband's exciter draws on exactly that range, so without a clean-up it would build new harmonics out of the artefacts and push them up into the air band. Now it cleans first and resynthesises second. How it works: an STFT, with a baseline for each frame taken as the median across neighbouring frequencies; any outlier above the threshold is brought down to the surrounding floor. Only what **flickers** is suppressed — a shimmer bin jumps by 10–20 dB from frame to frame, while an instrument's note decays smoothly. Nothing below 4.5 kHz is touched at all, the centre of the mix is cleaned more gently than the sides, and transients and broadband events are left alone. The exciter's feed is cleaned twice as hard as the dry path (capped at 1.0).
+
+This is an original implementation; no code from other projects was used. The ideas were checked against the public descriptions of deshimmer (median across frequency, a threshold, protection of broadband events) and Shimmer (clean first, master second; leave the low end alone; treat the centre more gently than the sides).
+
+Figures from a synthetic test (shimmer added to clean material containing a melody with overtones up to 13 kHz): artefacts at the input are 6.7 dB quieter, damage to clean music is −28 dB, the low end is untouched. Most importantly, in the air band after the exciter, shimmer-derived debris used to sit 6.2 dB below the music; now it sits 9.8 dB below. What remains comes from the nonlinear mixing of music and artefacts inside the saturation stage, which can't be cleaned out this way. For a track with no shimmer, the air band changes by 0.06 dB.
+
+**A limiter with a hold stage.** Checked against the Hyrax limiter from [Matchering](https://github.com/sergree/matchering). Theirs holds the gain down for a while after a peak before it starts releasing — which stops the limiter "breathing" too quickly on transient material (drums, percussion). There used to be only a lookahead stage here, with no hold. Both have now been added: a hold (~40 ms by default), and a mathematical guarantee that the smoothed gain never exceeds what's actually required at that instant — previously the only safeguard there was a blunt `clip()` after the fact. On a single-transient test, the hard clip fires on 0 samples out of 288,000 (previously this wasn't checked at all).
+
+**An honest peak ceiling.** The limiter's final check runs at 8× oversampling rather than 4×: an independent check against a 16× reference showed that 4× under-reads peaks right at the top of the frequency range — which is exactly where Airband creates content. A 0.15 dB margin covers what's left. By the reference, the output holds at −1.13 to −1.15 dBTP against a −1 ceiling.
+
+## Files
 
 ```
-airband.py     разбор аргументов, конвейер, авто-параметры (Master Assistant)
-audioio.py     чтение через soundfile или ffmpeg, запись 24-битного WAV
-analysis.py    спектр, детектор среза, громкость по BS.1770-4, тру-пик, мутность, стерео-ширина
-restore.py     досинтез верха, эквалайзер, стерео, подгонка под эталон
-master.py      лимитер с упреждением и hold-стадией, нормализация, альбомный сдвиг
-report.py      картинка со спектрами
-selftest.py    самопроверка DSP
+airband.py     argument parsing, the pipeline, auto parameters (Master Assistant)
+audioio.py     reading via soundfile or ffmpeg, writing 24-bit WAV
+analysis.py    spectrum, cutoff detector, BS.1770-4 loudness, true peak, mud, stereo width
+restore.py     top-end resynthesis, EQ, stereo, reference matching
+deshimmer.py   Suno shimmer clean-up before resynthesis
+master.py      lookahead limiter with a hold stage, normalisation, album offset
+report.py      the spectrum image
+selftest.py    the DSP self-test
 ```
 
-## Самопроверка
+## Self-test
 
 ```
 python selftest.py
 ```
 
-Проверяет калибровку измерителя громкости по эталону стандарта, линейность, работу лимитера, точность нормализации, детектор среза и качество восстановления. Запускать после любых правок в DSP.
+Checks the loudness meter's calibration against the standard's reference, linearity, the limiter and its hold stage, normalisation accuracy, the cutoff detector, restoration quality, the auto parameters, and the de-shimmer (suppression, damage to clean music, an untouched low end). Run it after any change to the DSP.
 
-## Что нужно знать
+## Worth knowing
 
-- Из глухого материала нельзя достать то, чего в нём не было. Гармоники — правдоподобная реконструкция, а не потерянная запись.
-- Всё считается на 48 кГц. Для материала из Suno это осознанно: над срезом в 16 кГц появляется восемь килогерц, куда класть гармоники.
-- Скорость примерно 0.15 от реального времени на обычном ноутбуке. Четырёхминутный трек — около 35 секунд.
-- В альбомном режиме обработанные треки временно лежат в системной папке для временных файлов. Альбом из десяти треков займёт там около двух гигабайт, потом всё удаляется само.
-- Слышно шипение на тарелках — убавляй `--drive` раньше, чем `--air`. Драйв отвечает за то, насколько грязными получаются гармоники, `--air` только за их уровень.
+- You can't get back what was never there. The harmonics are a plausible reconstruction, not the lost recording.
+- Everything is processed at 48 kHz. For Suno material that's deliberate: above a 16 kHz cutoff it leaves eight kilohertz of room for the harmonics.
+- Speed is about 0.4× real time: a four-minute track takes roughly a minute and a half (measured on a single core). Peak memory on a track that length is about 2 GB. Long tracks are processed in chunks, so memory doesn't multiply with track length.
+- In album mode, processed tracks sit temporarily in the system's temp folder. A ten-track album takes about two gigabytes there, and it's all deleted automatically afterwards.
+- If the cymbals start to hiss, turn `--drive` down before `--air`. Drive controls how dirty the harmonics get; `--air` only controls their level.

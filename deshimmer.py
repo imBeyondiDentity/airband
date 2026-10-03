@@ -65,8 +65,8 @@ def shimmer_gains(mag_db, sr, lo, hi, strength):
         return np.zeros_like(mag_db)
     a, b = max(0, k0 - W), min(nb, k1 + W + 1)
     seg = mag_db[:, a:b]
-    padded = np.pad(seg, ((0, 0), (W, W)), mode='edge')
-    base = np.median(sliding_window_view(padded, 2 * W + 1, axis=1), axis=-1)
+    padded = np.pad(seg.astype(np.float32), ((0, 0), (W, W)), mode='edge')
+    base = np.median(sliding_window_view(padded, 2 * W + 1, axis=1), axis=-1).astype(np.float64)
     band = slice(k0 - a, k1 - a + 1)
     ex = seg[:, band] - base[:, band]
 
@@ -123,10 +123,19 @@ def shimmer_gains(mag_db, sr, lo, hi, strength):
     return out
 
 
+CHUNK_S = 10.0   # длина куска обработки, с
+MARGIN_S = 1.0   # запас с каждой стороны куска, с — все зависимости алгоритма
+                 # короче 0.1 с, так что результат совпадает с обработкой целиком
+
+
 def deshimmer(x, sr, strength=0.6, cutoff=None, lo=4500.0, hi=14000.0,
               return_removed=False):
     """x: [n, 2]. Работает в mid/side: стороны — в полную силу,
-    центр — на MID_STRENGTH. Ниже lo и выше min(hi, cutoff) не трогает."""
+    центр — на MID_STRENGTH. Ниже lo и выше min(hi, cutoff) не трогает.
+
+    Длинный трек обрабатывается кусками с запасом: медиана по частоте на
+    всём треке разом требовала гигабайты памяти (на четырёх минутах
+    процесс падал)."""
     if cutoff is not None:
         hi = min(hi, cutoff * 0.97)
     if strength <= 0 or hi <= lo + 500:
@@ -134,6 +143,22 @@ def deshimmer(x, sr, strength=0.6, cutoff=None, lo=4500.0, hi=14000.0,
     x = np.atleast_2d(x.T).T if x.ndim > 1 else x[:, None]
     if x.shape[1] == 1:
         x = np.repeat(x, 2, axis=1)
+    n = x.shape[0]
+    chunk = int(CHUNK_S * sr) // HOP * HOP
+    margin = int(MARGIN_S * sr) // HOP * HOP
+    if n <= chunk + 2 * margin:
+        y = _process(x, sr, strength, lo, hi)
+    else:
+        y = np.empty_like(x)
+        for a in range(0, n, chunk):
+            b = min(n, a + chunk)
+            s0, s1 = max(0, a - margin), min(n, b + margin)
+            part = _process(x[s0:s1], sr, strength, lo, hi)
+            y[a:b] = part[a - s0:b - s0]
+    return (y, x - y) if return_removed else y
+
+
+def _process(x, sr, strength, lo, hi):
     n = x.shape[0]
     mid = (x[:, 0] + x[:, 1]) * 0.5
     side = (x[:, 0] - x[:, 1]) * 0.5
@@ -144,8 +169,7 @@ def deshimmer(x, sr, strength=0.6, cutoff=None, lo=4500.0, hi=14000.0,
         g = 10 ** (shimmer_gains(mag_db, sr, lo, hi, s) / 20)
         outs.append(_istft(X * g, plen, n))
     m2, s2 = outs
-    y = np.stack([m2 + s2, m2 - s2], axis=1)
-    return (y, x - y) if return_removed else y
+    return np.stack([m2 + s2, m2 - s2], axis=1)
 
 
 def shimmer_amount(x, sr, cutoff=None, lo=4500.0, hi=14000.0) -> float:
@@ -159,10 +183,14 @@ def shimmer_amount(x, sr, cutoff=None, lo=4500.0, hi=14000.0) -> float:
     side = (x[:, 0] - x[:, -1]) * 0.5 if x.shape[1] > 1 else x[:, 0]
     mid = (x[:, 0] + x[:, -1]) * 0.5
     tot, kept = 0.0, 0.0
-    for sig, s in ((mid, MID_STRENGTH), (side, 1.0)):
-        X, _ = _stft(sig)
-        P = np.abs(X) ** 2
-        g = 10 ** (shimmer_gains(10 * np.log10(P + 1e-24), sr, lo, hi, s) / 10)
-        k0, k1 = int(np.ceil(lo * N / sr)), int(np.floor(hi * N / sr))
-        tot += P[:, k0:k1 + 1].sum(); kept += (P * g)[:, k0:k1 + 1].sum()
+    k0, k1 = int(np.ceil(lo * N / sr)), int(np.floor(hi * N / sr))
+    chunk = int(CHUNK_S * sr) // HOP * HOP
+    for a in range(0, len(mid), chunk):
+        for sig, s in ((mid[a:a + chunk], MID_STRENGTH), (side[a:a + chunk], 1.0)):
+            if len(sig) < N:
+                continue
+            X, _ = _stft(sig)
+            P = np.abs(X) ** 2
+            g = 10 ** (shimmer_gains(10 * np.log10(P + 1e-24), sr, lo, hi, s) / 10)
+            tot += P[:, k0:k1 + 1].sum(); kept += (P * g)[:, k0:k1 + 1].sum()
     return float(10 * np.log10(tot / max(kept, 1e-24)))
