@@ -977,19 +977,22 @@ function bq(ctx, type, freq, q) {
   return f;
 }
 
-/* Несимметричная мягкая кривая: даёт и чётные, и нечётные гармоники.
-   Чётные звучат теплее, нечётные — ярче; вместе получается «воздух». */
+/* Кривая насыщения — та же, что в Python-версии (_saturate):
+   tanh(v) · (1 + 0.25 · tanh(v)). Нечётные гармоники дают яркость,
+   чётные (за счёт асимметрии) — теплоту. Раньше здесь стояла другая
+   формула, tanh(2.5x + 0.35x²): насыщение в разы жёстче, и новый верх
+   получался с наклоном — избыток сразу над срезом и провал у предела.
+   WaveShaper принимает вход только в диапазоне ±1, поэтому сигнал
+   подаётся делённым на SHAPER_K, а кривая растянута в SHAPER_K раз. */
+const SHAPER_K = 4;
 const shaperCurve = (() => {
-  const n = 8192;
+  const n = 16384;
   const c = new Float32Array(n);
-  let peak = 0;
   for (let i = 0; i < n; i++) {
-    const x = (i / (n - 1)) * 2 - 1;
-    const y = Math.tanh(2.5 * x + 0.35 * x * x);
-    c[i] = y;
-    if (Math.abs(y) > peak) peak = Math.abs(y);
+    const v = ((i / (n - 1)) * 2 - 1) * SHAPER_K;
+    const t = Math.tanh(v);
+    c[i] = t * (1 + 0.25 * t);
   }
-  for (let i = 0; i < n; i++) c[i] /= peak;
   return c;
 })();
 
@@ -1199,7 +1202,7 @@ async function renderSynth(buffer, p, cut) {
   const h2 = bq(ctx, 'highpass', srcLo, 0.7);
   const l1 = bq(ctx, 'lowpass', srcHi, 0.7);
   const drive = ctx.createGain();
-  drive.gain.value = 1 + p.drive * 14;
+  drive.gain.value = (1 + p.drive * 14) / SHAPER_K;
   const ws = ctx.createWaveShaper();
   ws.curve = shaperCurve;
   ws.oversample = '4x';
