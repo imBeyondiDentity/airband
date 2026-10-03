@@ -1,15 +1,16 @@
-"""Де-шиммер: подавление «шиммера» — узких мерцающих артефактов генерации
-в зоне примерно 4.5–14 кГц, которые оставляют Suno и подобные модели.
+"""De-shimmer: suppressing "shimmer" — narrow, flickering generation artefacts
+in roughly the 4.5–14 kHz range, left behind by Suno and similar models.
 
-Своя реализация с нуля. Идеи сверены с публичными описаниями двух
-проектов: deshimmer (TheApeMachine) — медианная базовая линия по частоте,
-порог над ней с мягким коленом, защита широкополосных событий, обход
-транзиентов; Shimmer (henricksmedia) — «сначала чистим, потом мастерим»,
-низ не трогаем вовсе, центр микса чистим бережнее, чем стороны. Код ни
-одного из проектов не использовался.
+An original implementation. The ideas were checked against the public
+descriptions of two projects: deshimmer (TheApeMachine) — a median baseline
+across frequency, a threshold above it with a soft knee, protection of
+broadband events, bypassing transients; Shimmer (henricksmedia) — "clean
+first, master second", leave the low end alone entirely, treat the centre of
+the mix more gently than the sides. No code from either project was used.
 
-Зачем это Airband: экситер питается как раз полосой, где живёт шиммер.
-Без чистки он строил бы из артефактов новые гармоники наверх.
+Why Airband needs this: the exciter draws on exactly the band where shimmer
+lives. Without cleaning, it would build new harmonics upwards out of the
+artefacts.
 """
 
 from __future__ import annotations
@@ -17,21 +18,21 @@ from __future__ import annotations
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
-N = 2048          # окно STFT
-HOP = 512         # шаг: 75% перекрытия, периодическое окно Ханна
-W = 12            # полуширина медианы по частоте (25 бинов ≈ 590 Гц при 48 кГц)
-THR = 8.0         # порог над базовой линией, дБ
-KNEE = 3.0        # мягкое колено, дБ
-TARGET = 1.0      # куда опускать выброс: до фона вокруг плюс 1 дБ
-MAX_RED = 30.0    # больше этого не срезаем никогда
-DENS_LO, DENS_HI = 0.05, 0.25    # доля выбросов в кадре: выше — это музыка, не трогаем
-FL_LO, FL_HI = 2.5, 5.0   # средний скачок уровня бина от кадра к кадру, дБ: ниже — нота, выше — мерцание
-FL_WIN = 5                # полуокно оценки дрожания, кадров (±~50 мс)
-FLUX_DB = 6.0     # скачок энергии полосы — транзиент
-HOLD_S = 0.07     # защита транзиента
-REL_S = 0.05      # плавность отпускания подавления
-MID_STRENGTH = 0.6    # центр (вокал, рабочий) — бережнее сторон
-EDGE_HZ = 200.0       # плавные края полосы
+N = 2048          # STFT window
+HOP = 512         # hop: 75% overlap, a periodic Hann window
+W = 12            # half-width of the median across frequency (25 bins ≈ 590 Hz at 48 kHz)
+THR = 8.0         # threshold above the baseline, dB
+KNEE = 3.0        # soft knee, dB
+TARGET = 1.0      # where to bring an outlier down to: the surrounding floor plus 1 dB
+MAX_RED = 30.0    # never cut more than this
+DENS_LO, DENS_HI = 0.05, 0.25    # share of outliers in a frame: above this it's music, leave it alone
+FL_LO, FL_HI = 2.5, 5.0   # mean frame-to-frame jump of a bin's level, dB: below — a note, above — flicker
+FL_WIN = 5                # half-window of the flicker estimate, frames (±~50 ms)
+FLUX_DB = 6.0     # jump in the band's energy — a transient
+HOLD_S = 0.07     # transient protection
+REL_S = 0.05      # smoothness of the suppression's release
+MID_STRENGTH = 0.6    # the centre (vocals, the main material) — gentler than the sides
+EDGE_HZ = 200.0       # smooth band edges
 
 
 def _win():
@@ -53,11 +54,11 @@ def _istft(X, plen, n):
     y = np.zeros(plen)
     for f in range(frames.shape[0]):
         y[f * HOP:f * HOP + N] += frames[f]
-    return (y / 1.5)[N:N + n]   # сумма w² для Ханна с шагом N/4 — ровно 1.5
+    return (y / 1.5)[N:N + n]   # the sum of w² for a Hann window with hop N/4 is exactly 1.5
 
 
 def shimmer_gains(mag_db, sr, lo, hi, strength):
-    """Маска подавления в дБ (кадры × бины), 0 — не трогать."""
+    """The suppression mask in dB (frames × bins), 0 — leave alone."""
     nf, nb = mag_db.shape
     binhz = sr / N
     k0, k1 = int(np.ceil(lo / binhz)), int(np.floor(hi / binhz))
@@ -70,18 +71,19 @@ def shimmer_gains(mag_db, sr, lo, hi, strength):
     band = slice(k0 - a, k1 - a + 1)
     ex = seg[:, band] - base[:, band]
 
-    # Выброс, перешедший порог, опускается до фона вокруг (локальной медианы),
-    # а не «срезается на процент» — иначе птичка остаётся громче музыки в
-    # своём бине. Вход в подавление — по мягкому колену вокруг порога.
+    # An outlier that has crossed the threshold is brought down to the surrounding
+    # floor (the local median) rather than "cut by a percentage" — otherwise the
+    # birdie stays louder than the music in its bin. Entry into suppression is
+    # through a soft knee around the threshold.
     t = np.clip((ex - (THR - KNEE)) / (2 * KNEE), 0, 1)
     red = (t * t * (3 - 2 * t)) * np.clip(ex - TARGET, 0, MAX_RED)
 
-    # Мерцание против ноты: шиммер дрожит — уровень бина прыгает на 10–20 дБ
-    # от кадра к кадру, а нота после атаки гаснет плавно, на 1–2 дБ за кадр.
-    # Подавляем только дрожащие выбросы. (Первая попытка — гейт спектральной
-    # плоскости — не годилась: птички сами делают полосу «тональной». Вторая —
-    # длина выброса — тоже: окно 43 мс склеивает быстрые вспышки в «длинную
-    # ноту».)
+    # Flicker versus note: shimmer trembles — a bin's level jumps by 10–20 dB
+    # from frame to frame, while a note decays smoothly after its attack, by 1–2 dB
+    # a frame. Only the trembling outliers are suppressed. (The first attempt — a
+    # spectral flatness gate — didn't work: the birdies themselves make the band
+    # look "tonal". The second — outlier length — didn't either: a 43 ms window
+    # glues fast flashes together into a "long note".)
     ec = np.clip(ex, 0.0, 40.0)
     d = np.abs(np.diff(ec, axis=0, prepend=ec[:1]))
     cs = np.concatenate([np.zeros((1, d.shape[1])), np.cumsum(d, axis=0)])
@@ -91,7 +93,7 @@ def shimmer_gains(mag_db, sr, lo, hi, strength):
     flick = np.clip((fluct - FL_LO) / (FL_HI - FL_LO), 0, 1)
     red = red * flick
 
-    # гейты по кадрам
+    # per-frame gates
     frac = (ex > THR).mean(axis=1)
     dens = np.clip((DENS_HI - frac) / (DENS_HI - DENS_LO), 0, 1)
     p = 10 ** (seg[:, band] / 10)
@@ -106,16 +108,17 @@ def shimmer_gains(mag_db, sr, lo, hi, strength):
             trans[f] = 0.0; h -= 1
     gdb = -red * (strength * dens * flatf * trans)[:, None]
 
-    # по частоте — расширение маски на соседние бины (это «юбка» того же
-    # тона от окна анализа), а не усреднение: усреднение резало глубину
-    # подавления в центре тона на треть. Затем — плавное отпускание по времени.
+    # along frequency — the mask is widened onto neighbouring bins (that's the
+    # same tone's "skirt" from the analysis window) rather than averaged: averaging
+    # cut the suppression depth at the tone's centre by a third. Then a smooth
+    # release over time.
     gp = np.pad(gdb, ((0, 0), (1, 1)), mode='edge')
     gdb = np.minimum(np.minimum(gp[:, :-2], gp[:, 1:-1]), gp[:, 2:])
     r = np.exp(-HOP / (sr * REL_S))
     for f in range(1, nf):
         gdb[f] = np.minimum(gdb[f], gdb[f - 1] * r)
 
-    # плавные края полосы
+    # smooth band edges
     fk = np.arange(k0, k1 + 1) * binhz
     edge = np.clip(np.minimum(fk - lo, hi - fk) / EDGE_HZ, 0, 1)
     out = np.zeros_like(mag_db)
@@ -123,19 +126,19 @@ def shimmer_gains(mag_db, sr, lo, hi, strength):
     return out
 
 
-CHUNK_S = 10.0   # длина куска обработки, с
-MARGIN_S = 1.0   # запас с каждой стороны куска, с — все зависимости алгоритма
-                 # короче 0.1 с, так что результат совпадает с обработкой целиком
+CHUNK_S = 10.0   # processing chunk length, s
+MARGIN_S = 1.0   # margin on each side of a chunk, s — every dependency in the algorithm
+                 # is shorter than 0.1 s, so the result matches processing the whole track at once
 
 
 def deshimmer(x, sr, strength=0.6, cutoff=None, lo=4500.0, hi=14000.0,
               return_removed=False):
-    """x: [n, 2]. Работает в mid/side: стороны — в полную силу,
-    центр — на MID_STRENGTH. Ниже lo и выше min(hi, cutoff) не трогает.
+    """x: [n, 2]. Works in mid/side: the sides at full strength,
+    the centre at MID_STRENGTH. Leaves everything below lo and above min(hi, cutoff) alone.
 
-    Длинный трек обрабатывается кусками с запасом: медиана по частоте на
-    всём треке разом требовала гигабайты памяти (на четырёх минутах
-    процесс падал)."""
+    A long track is processed in chunks with a margin: the median across
+    frequency on the whole track at once needed gigabytes of memory (on four
+    minutes the process crashed)."""
     if cutoff is not None:
         hi = min(hi, cutoff * 0.97)
     if strength <= 0 or hi <= lo + 500:
@@ -173,8 +176,8 @@ def _process(x, sr, strength, lo, hi):
 
 
 def shimmer_amount(x, sr, cutoff=None, lo=4500.0, hi=14000.0) -> float:
-    """Сколько энергии полосы де-шиммер снял бы на полной силе, дБ.
-    Нужна авто-режиму: чистый трек — лёгкая чистка, мерцающий — сильнее."""
+    """How much of the band's energy the de-shimmer would have removed at full strength, dB.
+    Needed by auto mode: a clean track gets a light clean-up, a flickering one a stronger one."""
     if cutoff is not None:
         hi = min(hi, cutoff * 0.97)
     if hi <= lo + 500:

@@ -1,14 +1,14 @@
-"""Финальная ступень: лимитер с упреждением и нормализация громкости.
+"""The final stage: a lookahead limiter and loudness normalisation.
 
-Сверено с лимитером Hyrax из Matchering (sergree/matchering). У них
-после пика есть отдельная стадия hold — гейн держится внизу ещё
-какое-то время, прежде чем начать отпускать, и финальная кривая
-гейна берётся как поэлементный минимум с реально необходимым
-значением, так что перехлёст в принципе невозможен, а не отлавливается
-постфактум клипом. Раньше здесь было и то, и другое: сразу после
-lookahead-минимума шло сглаживание, без hold и без этой гарантии —
-на транзиентных материалах (барабаны) это могло давать лёгкий
-pumping: гейн отпускался слишком быстро сразу после удара.
+Checked against the Hyrax limiter from Matchering (sergree/matchering). Theirs
+has a separate hold stage after the peak — the gain stays down for a while
+before it starts to release — and the final gain curve is taken as an
+element-wise minimum with the value that's actually required, so overshoot
+is impossible by construction rather than caught after the fact by a clip.
+This used to have neither: smoothing came straight after the lookahead
+minimum, with no hold and no such guarantee — on transient material
+(drums) that could produce a slight pumping: the gain released too
+quickly right after a hit.
 """
 
 from __future__ import annotations
@@ -21,14 +21,14 @@ from analysis import loudness_lufs, true_peak_db
 
 
 def _trailing_min(req: np.ndarray, hold: int) -> np.ndarray:
-    """g[i] = min(req[i-hold+1 .. i]) — минимум держится вперёд по
-    времени после провала, а не размазывается симметрично назад-вперёд.
+    """g[i] = min(req[i-hold+1 .. i]) — the minimum is held forward in
+    time after a dip, rather than smeared symmetrically backwards and forwards.
 
-    Окно принудительно делается нечётным и используется штатное
-    центрирование (origin=0) со сдвигом среза — на чётных окнах
-    параметр origin у scipy даёt едва заметный, но систематический
-    сдвиг результата назад по времени (проверено отдельно на широком
-    диапазоне размеров окна, а не только на маленьком примере)."""
+    The window is forced to be odd, and the standard centring (origin=0) is
+    used with a shifted slice — on even windows scipy's origin parameter gives
+    a barely noticeable but systematic shift of the result backwards in time
+    (checked separately across a wide range of window sizes, not just on a
+    small example)."""
     hold = hold | 1
     if hold <= 1:
         return req
@@ -40,18 +40,18 @@ def _trailing_min(req: np.ndarray, hold: int) -> np.ndarray:
 
 
 def _gain_curve(peak: np.ndarray, ceiling: float, look: int, hold: int) -> np.ndarray:
-    """Кривая гейна в три шага:
+    """The gain curve in three steps:
 
-    1. Lookahead (симметричный минимум, малое окно) — гейн уже опущен
-       к моменту, когда придёт пик.
-    2. Hold (чисто обратное окно, окно побольше) — после пика гейн не
-       начинает отпускать немедленно, а держится на дне ещё `hold`
-       отсчётов — это и есть отличие от предыдущей версии.
-    3. Сглаживание формы окном Ханна, и затем поэлементный минимум с
-       исходным требованием `req` — гарантия, что сглаживание не
-       могло случайно вернуть гейн выше, чем реально нужен именно
-       в этой точке. Раньше этой гарантии не было: несоответствие
-       ловил только грубый clip() в конце.
+    1. Lookahead (a symmetric minimum, a small window) — the gain is already
+       down by the time the peak arrives.
+    2. Hold (a purely backward window, a larger one) — after the peak the gain
+       doesn't start to release immediately, but stays at the bottom for another
+       `hold` samples — which is what differs from the previous version.
+    3. Smoothing of the shape with a Hann window, then an element-wise
+       minimum with the original requirement `req` — a guarantee that smoothing
+       couldn't accidentally bring the gain back above what's actually needed
+       at that exact point. This guarantee used to be missing: a mismatch was
+       caught only by a blunt clip() at the end.
     """
     win = 2 * look + 1
     req = np.ones_like(peak)
@@ -72,14 +72,13 @@ def _gain_curve(peak: np.ndarray, ceiling: float, look: int, hold: int) -> np.nd
 def limit(x: np.ndarray, ceiling_db: float = -1.0, sr: int = 48000,
           lookahead_ms: float = 2.0, hold_ms: float = 40.0,
           margin_db: float = 0.4) -> np.ndarray:
-    """Придержать пики под потолком.
+    """Hold the peaks under the ceiling.
 
-    Кривая гейна считается по сэмплам, но потолок берётся с запасом
-    margin_db. После этого тру-пик проверяется честно, на
-    передискретизованном сигнале, и если запаса не хватило —
-    добавляется статический сдвиг. Так межсэмпловые выбросы
-    не пролезают, а трек не приходится держать в памяти
-    в четырёхкратном виде.
+    The gain curve is computed per sample, but the ceiling is taken with a
+    margin of margin_db. After that the true peak is checked honestly, on the
+    oversampled signal, and if the margin wasn't enough, a static offset is
+    added. That way inter-sample overshoots don't get through, and the track
+    doesn't have to be held in memory at four times its size.
     """
     ceiling = 10 ** (ceiling_db / 20)
     inner = ceiling * 10 ** (-margin_db / 20)
@@ -90,9 +89,10 @@ def limit(x: np.ndarray, ceiling_db: float = -1.0, sr: int = 48000,
     y = x * _gain_curve(peak, inner, look, hold)[:, None]
     np.clip(y, -ceiling, ceiling, out=y)
 
-    # Финальная проверка на 8x, а не на 4x: проверено независимым эталоном
-    # (16x) — 4x недочитывает контент у самого предела частот, а Airband
-    # как раз его и создаёт. Запас 0.15 дБ закрывает остаточный промах 8x.
+    # The final check runs at 8x rather than 4x: an independent reference
+    # (16x) shows that 4x under-reads content right at the top of the frequency
+    # range, and that's exactly what Airband creates. A 0.15 dB margin covers
+    # whatever 8x still misses.
     safe_db = ceiling_db - 0.15
     tp = true_peak_db(y, sr, oversample=8)
     if tp > safe_db:
@@ -104,11 +104,11 @@ def limit(x: np.ndarray, ceiling_db: float = -1.0, sr: int = 48000,
 def normalize(x: np.ndarray, sr: int, target_lufs: float,
               ceiling_db: float = -1.0, tol_db: float = 0.1,
               max_passes: int = 4) -> tuple[np.ndarray, dict]:
-    """Привести к целевой громкости и придержать пики.
+    """Bring to the target loudness and hold the peaks.
 
-    Лимитер сам по себе снижает громкость, поэтому одного прохода
-    мало: цель уточняется итеративно, пока промах не станет меньше
-    десятой доли децибела.
+    The limiter itself lowers the loudness, so one pass isn't enough:
+    the target is refined iteratively until the miss is under a tenth of
+    a decibel.
     """
     before = loudness_lufs(x, sr)
     if before <= -70:
@@ -137,10 +137,10 @@ def normalize(x: np.ndarray, sr: int, target_lufs: float,
 
 
 def album_offset(loudnesses: list[float], target_lufs: float) -> float:
-    """Один общий сдвиг на весь альбом.
+    """One shared offset for the whole album.
 
-    Самый громкий трек выводится на цель, остальные сохраняют
-    исходную расстановку — тихая интерлюдия остаётся тихой.
+    The loudest track is brought up to the target, and the rest keep
+    their original relationships — a quiet interlude stays quiet.
     """
     valid = [l for l in loudnesses if l > -70]
     if not valid:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Airband — восстановление срезанного верха в треках из Suno.
+"""Airband — restoring the top end cut from tracks generated in Suno.
 
     python airband.py track.mp3
     python airband.py album/ -o mastered/ --album --target -14
@@ -45,18 +45,18 @@ PRESETS = {
 
 
 def auto_params(x: np.ndarray, sr: int, cut: dict) -> Params:
-    """Считает параметры из самого трека вместо готового набора чисел.
+    """Works out the parameters from the track itself rather than from a ready-made set of numbers.
 
-    Идея из oXygen (Master Assistant): проанализировать вход и написать
-    настройки самому, а не заставлять человека угадывать пресет. Три вещи
-    меряются по-настоящему, а не берутся с потолка:
+    The idea is from oXygen (Master Assistant): analyse the input and write the
+    settings yourself, rather than make a person guess a preset. Three things
+    are actually measured rather than plucked out of thin air:
 
-    - крутизна обрыва (уже есть в detect_cutoff) — жёсткий MP3-срез тянет
-      на агрессивное восстановление, мягкий WAV-скат — на бережное;
-    - реальный избыток на 250–400 Гц против середины — чистка мути идёт
-      только тогда, когда мути правда многовато, а не всегда на −2.5 дБ;
-    - существующая стерео-ширина (RMS side/mid) — уже широкому треку
-      досыпается меньше, почти моно — больше.
+    - cutoff steepness (already in detect_cutoff) — a hard MP3 cliff calls
+      for aggressive restoration, a soft WAV rolloff for a gentle one;
+    - the real excess at 250–400 Hz against the mids — mud is cleaned only
+      when there's genuinely quite a lot of it, not always at −2.5 dB;
+    - the existing stereo width (RMS side/mid) — an already wide track
+      gets less added, a near-mono one gets more.
     """
     if cut["full_range"]:
         air = drive = shelf = 0.0
@@ -75,8 +75,9 @@ def auto_params(x: np.ndarray, sr: int, cut: dict) -> Params:
     width_now = stereo_width_ratio(x)
     width = float(np.clip(0.45 - 0.35 * width_now, 0.0, 0.5))
 
-    # Чистка шиммера по измеренному количеству: сколько энергии полосы
-    # де-шиммер снял бы на полной силе. Совсем чистому — лёгкая страховка.
+    # Shimmer cleanup by the measured amount: how much of the band's energy the
+    # de-shimmer would have removed at full strength. A clean track gets only a
+    # light safety pass.
     amt = shimmer_amount(x, sr, None if cut["full_range"] else cut["hz"])
     desh = float(np.clip(0.3 + 0.25 * amt, 0.3, 0.8))
 
@@ -98,11 +99,11 @@ def analyse(x: np.ndarray, sr: int) -> dict:
 def restore(x: np.ndarray, sr: int, p: Params, cut: dict,
             reference: np.ndarray | None = None,
             ref_strength: float = 1.0) -> np.ndarray:
-    # Сначала чистим, потом достраиваем: экситер питается той же полосой,
-    # где живёт шиммер, и без чистки строил бы из него новые гармоники.
-    # Сухой путь чистится на выбранной силе, питание экситера — вдвое
-    # сильнее (не выше 1.0): экситеру нужна только музыкальная структура
-    # полосы, а не её «красота». На тесте это ещё −1.1 дБ мусора в воздухе.
+    # Clean first, rebuild second: the exciter draws on the same band where the
+    # shimmer lives, and without cleaning would build new harmonics out of it.
+    # The dry path is cleaned at the chosen strength, the exciter's feed at twice
+    # that (capped at 1.0): the exciter needs only the band's musical structure,
+    # not its "beauty". In testing that's another −1.1 dB of debris in the air band.
     c = None if cut["full_range"] else cut["hz"]
     feed = x
     if p.deshimmer > 0:
@@ -121,10 +122,10 @@ def restore(x: np.ndarray, sr: int, p: Params, cut: dict,
 
 def air_delta(before_db, before_f, after: np.ndarray, sr: int,
               cutoff: float) -> tuple[float, float]:
-    """Прирост в полосе выше среза и её итоговый уровень
-    относительно середины. Прирост сам по себе обманчив: если
-    полоса была пустой, он уходит в десятки децибел и ничего
-    не говорит о том, как это звучит."""
+    """The gain in the band above the cutoff and its final level
+    relative to the mids. The gain on its own is misleading: if the
+    band was empty, it runs to tens of decibels and says nothing
+    about how it sounds."""
     fb, pb = average_spectrum(after, sr)
     db_ = to_db(smooth_octave(pb, fb, 1 / 12))
     top = sr / 2 * 0.97
@@ -138,46 +139,46 @@ def air_delta(before_db, before_f, after: np.ndarray, sr: int,
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="airband",
-        description="Восстановление срезанного верха в треках, сгенерированных в Suno.",
+        description="Restoring the top end cut from tracks generated in Suno.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Примеры:\n"
+            "Examples:\n"
             "  airband.py track.mp3\n"
             "  airband.py album/ -o mastered/ --album --target -14\n"
             "  airband.py track.wav --reference ref.flac --report\n"
         ),
     )
-    ap.add_argument("inputs", nargs="+", help="файлы или папки")
-    ap.add_argument("-o", "--out", default="out", help="куда класть результат (по умолчанию out/)")
+    ap.add_argument("inputs", nargs="+", help="files or folders")
+    ap.add_argument("-o", "--out", default="out", help="where to put the results (default: out/)")
     ap.add_argument("--preset", choices=sorted(PRESETS) + ["auto"], default="mp3-rescue",
-                    help="auto — параметры считаются из самого трека (Master Assistant)")
+                    help="auto — parameters are worked out from the track itself (Master Assistant)")
 
-    g = ap.add_argument_group("обработка")
-    g.add_argument("--air", type=float, help="сколько верха достроить, 0..1.2 (1.0 — естественное продолжение спектра)")
-    g.add_argument("--drive", type=float, help="плотность гармоник, 0..1")
-    g.add_argument("--shelf", type=float, help="шельф воздуха от 11 кГц, дБ")
-    g.add_argument("--mud", type=float, help="правка на 300 Гц, дБ (отрицательное — чистка)")
-    g.add_argument("--width", type=float, help="ширина стерео выше 2.5 кГц, 0..1")
+    g = ap.add_argument_group("processing")
+    g.add_argument("--air", type=float, help="how much top end to rebuild, 0..1.2 (1.0 is the natural continuation of the spectrum)")
+    g.add_argument("--drive", type=float, help="harmonic density, 0..1")
+    g.add_argument("--shelf", type=float, help="air shelf from 11 kHz, dB")
+    g.add_argument("--mud", type=float, help="adjustment at 300 Hz, dB (negative cuts)")
+    g.add_argument("--width", type=float, help="stereo width above 2.5 kHz, 0..1")
     g.add_argument("--deshimmer", type=float,
-                   help="чистка шиммера Suno перед досинтезом, 0..1 (0 — выкл)")
+                   help="Suno shimmer cleanup before resynthesis, 0..1 (0 — off)")
     g.add_argument("--no-follow", action="store_true",
-                   help="не следить за огибающей, класть верх ровным слоем")
-    g.add_argument("--cutoff", type=float, help="задать точку среза вручную, Гц")
+                   help="don't follow the envelope, lay the top end down as a flat layer")
+    g.add_argument("--cutoff", type=float, help="set the cutoff point by hand, Hz")
 
-    m = ap.add_argument_group("громкость")
-    m.add_argument("--target", type=float, default=-11.0, help="целевая громкость, LUFS (по умолчанию -11)")
-    m.add_argument("--ceiling", type=float, default=-1.0, help="потолок тру-пика, дБ (по умолчанию -1)")
+    m = ap.add_argument_group("loudness")
+    m.add_argument("--target", type=float, default=-11.0, help="target loudness, LUFS (default -11)")
+    m.add_argument("--ceiling", type=float, default=-1.0, help="true-peak ceiling, dB (default -1)")
     m.add_argument("--album", action="store_true",
-                   help="общий сдвиг на весь альбом, относительные уровни сохраняются")
+                   help="one shared offset for the whole album, relative levels are kept")
 
-    r = ap.add_argument_group("эталон")
-    r.add_argument("--reference", help="трек, под тональный баланс которого подгонять")
-    r.add_argument("--ref-strength", type=float, default=1.0, help="0..1, насколько сильно подгонять")
+    r = ap.add_argument_group("reference")
+    r.add_argument("--reference", help="a track whose tonal balance to match")
+    r.add_argument("--ref-strength", type=float, default=1.0, help="0..1, how strongly to match")
 
-    o = ap.add_argument_group("вывод")
-    o.add_argument("--report", action="store_true", help="сохранить PNG со спектрами до и после")
-    o.add_argument("--suffix", default=" (airband)", help="суффикс имени файла")
-    o.add_argument("--analyze", action="store_true", help="только замерить, ничего не писать")
+    o = ap.add_argument_group("output")
+    o.add_argument("--report", action="store_true", help="save a PNG of the spectra before and after")
+    o.add_argument("--suffix", default=" (airband)", help="file name suffix")
+    o.add_argument("--analyze", action="store_true", help="measure only, write nothing")
     o.add_argument("-q", "--quiet", action="store_true")
     return ap
 
@@ -193,8 +194,8 @@ def apply_overrides(p: Params, args) -> Params:
 
 
 def resolve_params(args) -> Params | None:
-    """None означает «auto» — параметры считаются позже, для каждого
-    файла отдельно, а не один раз на весь запуск."""
+    """None means "auto" — the parameters are worked out later, for each
+    file separately, rather than once for the whole run."""
     if args.preset == "auto":
         return None
     p = Params(**asdict(PRESETS[args.preset]))
@@ -208,10 +209,10 @@ def main(argv=None) -> int:
     try:
         files = audioio.collect(args.inputs)
     except audioio.AudioError as e:
-        print(f"Ошибка: {e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
         return 2
     if not files:
-        print("Ошибка: не нашёл ни одного аудиофайла.", file=sys.stderr)
+        print("Error: no audio files found.", file=sys.stderr)
         return 2
 
     params = resolve_params(args)
@@ -220,10 +221,10 @@ def main(argv=None) -> int:
     reference = None
     if args.reference:
         reference, _ = audioio.load(args.reference)
-        say(f"Эталон: {Path(args.reference).name}")
+        say(f"Reference: {Path(args.reference).name}")
 
-    say(f"Пресет {args.preset}, цель {args.target:+.1f} LUFS, потолок {args.ceiling:+.1f} дБ")
-    say(f"Файлов: {len(files)}\n")
+    say(f"Preset {args.preset}, target {args.target:+.1f} LUFS, ceiling {args.ceiling:+.1f} dB")
+    say(f"Files: {len(files)}\n")
 
     stash = tempfile.TemporaryDirectory(prefix="airband-") if args.album else None
     pending: list[dict] = []
@@ -233,7 +234,7 @@ def main(argv=None) -> int:
         try:
             x, sr = audioio.load(path)
         except audioio.AudioError as e:
-            say(f"    пропускаю: {e}")
+            say(f"    skipping: {e}")
             continue
 
         if x.shape[1] == 1:
@@ -244,32 +245,32 @@ def main(argv=None) -> int:
             cut["hz"], cut["full_range"] = args.cutoff, False
 
         if cut["full_range"]:
-            say("    обрыва нет, спектр полный — досинтез пропускается")
+            say("    no cutoff, the spectrum is full — resynthesis skipped")
         else:
-            say(f"    срез на {cut['hz'] / 1000:.2f} кГц, перепад {cut['steepness_db']:.0f} дБ")
+            say(f"    cutoff at {cut['hz'] / 1000:.2f} kHz, drop of {cut['steepness_db']:.0f} dB")
 
         lufs_in = loudness_lufs(x, sr)
 
         if args.analyze:
-            say(f"    громкость {lufs_in:+.1f} LUFS\n")
+            say(f"    loudness {lufs_in:+.1f} LUFS\n")
             continue
 
         file_params = params
         if file_params is None:
             file_params = apply_overrides(auto_params(x, sr, cut), args)
-            say(f"    авто: воздух {file_params.air:.2f}, драйв {file_params.drive:.2f}, "
-                f"шельф {file_params.shelf:+.1f} дБ, муть {file_params.mud:+.1f} дБ, "
-                f"ширина {file_params.width:.2f}, де-шиммер {file_params.deshimmer:.2f}")
+            say(f"    auto: air {file_params.air:.2f}, drive {file_params.drive:.2f}, "
+                f"shelf {file_params.shelf:+.1f} dB, mud {file_params.mud:+.1f} dB, "
+                f"width {file_params.width:.2f}, de-shimmer {file_params.deshimmer:.2f}")
 
         y = restore(x, sr, file_params, cut, reference, args.ref_strength)
         if not cut["full_range"]:
             delta, level = air_delta(cut["_db"], cut["_freqs"], y, sr, cut["hz"])
             if delta > 40:
-                say(f"    полоса выше среза была пустой, теперь {level:+.0f} дБ "
-                    f"относительно середины")
+                say(f"    the band above the cutoff was empty, now {level:+.0f} dB "
+                    f"relative to the mids")
             else:
-                say(f"    выше среза добавлено {delta:+.1f} дБ, "
-                    f"уровень {level:+.0f} дБ относительно середины")
+                say(f"    {delta:+.1f} dB added above the cutoff, "
+                    f"level {level:+.0f} dB relative to the mids")
 
         if args.album:
             raw_lufs = loudness_lufs(y, sr)
@@ -277,7 +278,7 @@ def main(argv=None) -> int:
             np.save(tmp, y.astype(np.float32))
             pending.append({"path": path, "tmp": tmp, "lufs": raw_lufs,
                             "sr": sr, "cut": cut["hz"], "orig": None})
-            say(f"    громкость {lufs_in:+.1f} → {raw_lufs:+.1f} LUFS, жду альбом\n")
+            say(f"    loudness {lufs_in:+.1f} → {raw_lufs:+.1f} LUFS, waiting for the album\n")
             if args.report:
                 pending[-1]["orig"] = x.astype(np.float32)
             continue
@@ -285,8 +286,8 @@ def main(argv=None) -> int:
         y, stats = normalize(y, sr, args.target, args.ceiling)
         dest = out_dir / f"{path.stem}{args.suffix}.wav"
         audioio.write_wav24(dest, y, sr)
-        say(f"    громкость {stats['lufs_before']:+.1f} → {stats['lufs_after']:+.1f} LUFS, "
-            f"пик {stats['true_peak']:+.2f} дБ")
+        say(f"    loudness {stats['lufs_before']:+.1f} → {stats['lufs_after']:+.1f} LUFS, "
+            f"peak {stats['true_peak']:+.2f} dB")
         say(f"    {dest}")
 
         if args.report:
@@ -295,14 +296,14 @@ def main(argv=None) -> int:
             if spectrum_png(x, y, sr, cut["hz"], png, title=path.stem):
                 say(f"    {png}")
             else:
-                say("    отчёт пропущен: нет matplotlib")
+                say("    report skipped: matplotlib isn't installed")
         say("")
 
     if args.album and pending:
         offset = album_offset([t["lufs"] for t in pending], args.target)
 
-        # Лимитер срезает часть прибавки, поэтому сдвиг уточняется
-        # пробным прогоном самого громкого трека.
+        # The limiter takes off part of the gain, so the offset is refined
+        # with a trial run of the loudest track.
         loudest = max(pending, key=lambda t: t["lufs"])
         probe = np.load(loudest["tmp"]).astype(np.float64)
         _, pstat = apply_offset(probe, loudest["sr"], offset, args.ceiling)
@@ -311,14 +312,14 @@ def main(argv=None) -> int:
             offset += shortfall
         del probe
 
-        say(f"Альбомный сдвиг: {offset:+.2f} дБ\n")
+        say(f"Album offset: {offset:+.2f} dB\n")
         for t in pending:
             y = np.load(t["tmp"]).astype(np.float64)
             y, stats = apply_offset(y, t["sr"], offset, args.ceiling)
             dest = out_dir / f"{t['path'].stem}{args.suffix}.wav"
             audioio.write_wav24(dest, y, t["sr"])
             say(f"{t['path'].name}: {stats['lufs_before']:+.1f} → {stats['lufs_after']:+.1f} LUFS, "
-                f"пик {stats['true_peak']:+.2f} дБ")
+                f"peak {stats['true_peak']:+.2f} dB")
             if args.report and t["orig"] is not None:
                 from report import spectrum_png
                 png = out_dir / f"{t['path'].stem}{args.suffix}.png"
@@ -328,7 +329,7 @@ def main(argv=None) -> int:
     if stash:
         stash.cleanup()
     if not args.analyze:
-        say(f"\nГотово: {out_dir.resolve()}")
+        say(f"\nDone: {out_dir.resolve()}")
     return 0
 
 

@@ -681,6 +681,12 @@ footer {
       <h3 class="subsection-label">Верх и тон</h3>
 
       <div class="ctl">
+        <label for="cDeshimmer">Чистка шиммера Suno</label>
+        <input type="range" id="cDeshimmer" min="0" max="100" value="60">
+        <output id="oDeshimmer">60</output>
+      </div>
+
+      <div class="ctl">
         <label for="cAir">Сколько верха достроить</label>
         <input type="range" id="cAir" min="0" max="100" value="70">
         <output id="oAir">70</output>
@@ -693,13 +699,13 @@ footer {
       </div>
 
       <div class="ctl">
-        <label for="cShelf">Воздух от 11 кГц</label>
+        <label for="cShelf">Подъём верха от 11 кГц</label>
         <input type="range" id="cShelf" min="0" max="60" value="30">
         <output id="oShelf">+3.0 дБ</output>
       </div>
 
       <div class="ctl">
-        <label for="cMud">Чистка мути на 300 Гц</label>
+        <label for="cMud">Разгрузка середины на 300 Гц</label>
         <input type="range" id="cMud" min="0" max="60" value="25">
         <output id="oMud">−2.5 дБ</output>
       </div>
@@ -1234,7 +1240,240 @@ function monoOf(buffer) {
   return m;
 }
 
-async function renderChain(buffer, p, cut) {
+/* Де-шиммер — порт deshimmer.py из Python-версии, со сверкой результатов.
+   Своя реализация; идеи сверены с публичными описаниями deshimmer
+   (TheApeMachine) и Shimmer (henricksmedia), их код не использовался.
+   Подавляет узкие мерцающие артефакты Suno в зоне 4.5–14 кГц до того,
+   как экситер построит из них новые гармоники наверх. */
+const DS = {
+  N: 2048, HOP: 512, W: 12, THR: 8.0, KNEE: 3.0, TARGET: 1.0, MAX_RED: 30.0,
+  DENS_LO: 0.05, DENS_HI: 0.25, FL_LO: 2.5, FL_HI: 5.0, FL_WIN: 5,
+  FLUX_DB: 6.0, HOLD_S: 0.07, REL_S: 0.05, MID: 0.6, EDGE_HZ: 200.0,
+  CHUNK_S: 10.0, MARGIN_S: 1.0, LO: 4500.0, HI: 14000.0
+};
+const dsFFT = makeFFT(DS.N);
+const dsWin = (() => {
+  const w = new Float64Array(DS.N);
+  for (let i = 0; i < DS.N; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / DS.N);
+  return w;
+})();
+
+/* STFT: сигнал дополняется нулями по N с каждой стороны, как в Python. */
+function dsStft(x) {
+  const N = DS.N, H = DS.HOP, plen = x.length + 2 * N;
+  const nf = 1 + Math.floor((plen - N) / H);
+  const re = new Float64Array(nf * N), im = new Float64Array(nf * N);
+  const fr = new Float64Array(N), fi = new Float64Array(N);
+  for (let f = 0; f < nf; f++) {
+    const off = f * H - N;
+    for (let i = 0; i < N; i++) {
+      const j = off + i;
+      fr[i] = (j >= 0 && j < x.length ? x[j] : 0) * dsWin[i]; fi[i] = 0;
+    }
+    dsFFT(fr, fi);
+    re.set(fr, f * N); im.set(fi, f * N);
+  }
+  return { re, im, nf, plen };
+}
+
+/* Обратное STFT с маской гейнов (в дБ, только бины k0..k1). */
+function dsIstft(S, n, k0, k1, gdb, scale) {
+  const N = DS.N, H = DS.HOP, nb = k1 - k0 + 1;
+  const y = new Float64Array(S.plen);
+  const fr = new Float64Array(N), fi = new Float64Array(N);
+  for (let f = 0; f < S.nf; f++) {
+    for (let i = 0; i < N; i++) { fr[i] = S.re[f * N + i]; fi[i] = -S.im[f * N + i]; }
+    if (gdb && scale > 0) {
+      for (let q = 0; q < nb; q++) {
+        const g = Math.pow(10, scale * gdb[f * nb + q] / 20);
+        const k = k0 + q;
+        fr[k] *= g; fi[k] *= g;
+        if (k > 0 && k < N / 2) { fr[N - k] *= g; fi[N - k] *= g; }
+      }
+    }
+    dsFFT(fr, fi);   // обратное через сопряжение: conj(fft(conj(X)))/N
+    const off = f * H;
+    for (let i = 0; i < N; i++) y[off + i] += (fr[i] / N) * dsWin[i];
+  }
+  const out = new Float64Array(n);
+  for (let i = 0; i < n; i++) out[i] = y[N + i] / 1.5;
+  return out;
+}
+
+
+/* Маска подавления в дБ на единичной силе. Сила входит только множителем,
+   а расширение маски и отпускание этому множителю не мешают, — поэтому
+   для любой силы маска = сила × эта маска. */
+function dsUnitGains(S, sr, lo, hi, magOffsetDb) {
+  const N = DS.N, H = DS.HOP, W = DS.W, nf = S.nf, nbAll = N / 2 + 1;
+  const binhz = sr / N;
+  const k0 = Math.ceil(lo / binhz), k1 = Math.floor(hi / binhz);
+  if (k1 - k0 < 2 * W + 3) return null;
+  const a = Math.max(0, k0 - W), b = Math.min(nbAll, k1 + W + 1), segLen = b - a;
+  const nb = k1 - k0 + 1;
+  const ex = new Float64Array(nf * nb), segv = new Float64Array(segLen), segP = new Float64Array(segLen);
+  const seg32 = new Float32Array(segLen), win = new Float32Array(2 * W + 1);
+  const dens = new Float64Array(nf), e = new Float64Array(nf);
+  for (let f = 0; f < nf; f++) {
+    for (let c = 0; c < segLen; c++) {
+      const k = a + c, r = S.re[f * N + k], i = S.im[f * N + k];
+      segP[c] = r * r + i * i;
+      segv[c] = magOffsetDb(segP[c]);
+      seg32[c] = segv[c];
+    }
+    // Скользящая медиана по частоте: окно держится отсортированным, при
+    // сдвиге на один бин одно значение вынимается и одно вставляется —
+    // вместо полного поиска медианы заново для каждого бина.
+    let cnt = 0, psum = 0;
+    const cl = (c) => seg32[Math.min(segLen - 1, Math.max(0, c))];
+    const c0 = k0 - a;
+    for (let t = -W; t <= W; t++) win[t + W] = cl(c0 + t);
+    win.sort();
+    for (let q = 0; q < nb; q++) {
+      const c = c0 + q;
+      if (q > 0) {
+        const outV = cl(c - 1 - W), inV = cl(c + W);
+        let lo2 = 0, hi2 = win.length - 1;
+        while (lo2 < hi2) { const m = (lo2 + hi2) >> 1; if (win[m] < outV) lo2 = m + 1; else hi2 = m; }
+        let p = lo2;
+        if (inV >= outV) {
+          while (p + 1 < win.length && win[p + 1] < inV) { win[p] = win[p + 1]; p++; }
+        } else {
+          while (p > 0 && win[p - 1] > inV) { win[p] = win[p - 1]; p--; }
+        }
+        win[p] = inV;
+      }
+      const v = segv[c] - win[W];
+      ex[f * nb + q] = v;
+      if (v > DS.THR) cnt++;
+      psum += segP[c];
+    }
+    dens[f] = Math.max(0, Math.min(1, (DS.DENS_HI - cnt / nb) / (DS.DENS_HI - DS.DENS_LO)));
+    e[f] = 10 * Math.log10(psum + 1e-20);
+  }
+  // транзиенты: скачок энергии полосы — защита на HOLD_S
+  const trans = new Float64Array(nf).fill(1);
+  const holdN = Math.ceil(DS.HOLD_S * sr / H); let h = 0;
+  for (let f = 0; f < nf; f++) {
+    if (f > 0 && e[f] - e[f - 1] > DS.FLUX_DB) h = holdN;
+    if (h > 0) { trans[f] = 0; h--; }
+  }
+  // подавление: опустить выброс до фона, только если он дрожит
+  // накопленная сумма скачков уровня — строками по кадрам (память подряд)
+  const gdb = new Float64Array(nf * nb);
+  const cs = new Float64Array((nf + 1) * nb);
+  for (let f = 0; f < nf; f++) {
+    const r0 = f * nb, rp = (f - 1) * nb, c0r = f * nb, c1r = (f + 1) * nb;
+    for (let q = 0; q < nb; q++) {
+      const ec = Math.min(40, Math.max(0, ex[r0 + q]));
+      const pe = f === 0 ? ec : Math.min(40, Math.max(0, ex[rp + q]));
+      cs[c1r + q] = cs[c0r + q] + Math.abs(ec - pe);
+    }
+  }
+  const kn = 1 / (2 * DS.KNEE), fl = 1 / (DS.FL_HI - DS.FL_LO);
+  for (let f = 0; f < nf; f++) {
+    const lo_i = Math.max(0, f - DS.FL_WIN), hi_i = Math.min(nf, f + DS.FL_WIN + 1);
+    const inv = 1 / (hi_i - lo_i), w = dens[f] * trans[f], r0 = f * nb, rh = hi_i * nb, rl = lo_i * nb;
+    for (let q = 0; q < nb; q++) {
+      const v = ex[r0 + q];
+      let t = (v - (DS.THR - DS.KNEE)) * kn; t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const dv = v - DS.TARGET;
+      let red = t * t * (3 - 2 * t) * (dv < 0 ? 0 : dv > DS.MAX_RED ? DS.MAX_RED : dv);
+      let fk = ((cs[rh + q] - cs[rl + q]) * inv - DS.FL_LO) * fl; fk = fk < 0 ? 0 : fk > 1 ? 1 : fk;
+      gdb[r0 + q] = -red * fk * w;
+    }
+  }
+  // расширение маски на соседние бины, затем плавное отпускание по времени
+  const out = new Float64Array(nf * nb);
+  for (let f = 0; f < nf; f++) for (let q = 0; q < nb; q++) {
+    const l = gdb[f * nb + Math.max(0, q - 1)], m = gdb[f * nb + q], r = gdb[f * nb + Math.min(nb - 1, q + 1)];
+    out[f * nb + q] = Math.min(Math.min(l, m), r);
+  }
+  const rr = Math.exp(-H / (sr * DS.REL_S));
+  for (let f = 1; f < nf; f++) for (let q = 0; q < nb; q++)
+    out[f * nb + q] = Math.min(out[f * nb + q], out[(f - 1) * nb + q] * rr);
+  const edge = new Float64Array(nb);
+  for (let q = 0; q < nb; q++) {
+    const fk = (k0 + q) * binhz;
+    edge[q] = Math.max(0, Math.min(1, Math.min(fk - lo, hi - fk) / DS.EDGE_HZ));
+  }
+  for (let f = 0; f < nf; f++) { const r0 = f * nb; for (let q = 0; q < nb; q++) out[r0 + q] *= edge[q]; }
+  return { k0, k1, gdb: out };
+}
+
+const dsAmpDb = (p) => 20 * Math.log10(Math.sqrt(p) + 1e-12);
+
+/* Обработка одного куска: mid/side, одна маска на канал, сколько угодно сил. */
+function dsProcess(L, R, sr, strengths, lo, hi) {
+  const n = L.length, mid = new Float64Array(n), side = new Float64Array(n);
+  for (let i = 0; i < n; i++) { mid[i] = (L[i] + R[i]) * 0.5; side[i] = (L[i] - R[i]) * 0.5; }
+  const Sm = dsStft(mid), Ss = dsStft(side);
+  const Gm = dsUnitGains(Sm, sr, lo, hi, dsAmpDb), Gs = dsUnitGains(Ss, sr, lo, hi, dsAmpDb);
+  return strengths.map((s) => {
+    const m2 = Gm ? dsIstft(Sm, n, Gm.k0, Gm.k1, Gm.gdb, s * DS.MID) : dsIstft(Sm, n, 0, -1, null, 0);
+    const s2 = Gs ? dsIstft(Ss, n, Gs.k0, Gs.k1, Gs.gdb, s) : dsIstft(Ss, n, 0, -1, null, 0);
+    const oL = new Float32Array(n), oR = new Float32Array(n);
+    for (let i = 0; i < n; i++) { oL[i] = m2[i] + s2[i]; oR[i] = m2[i] - s2[i]; }
+    return [oL, oR];
+  });
+}
+
+/* Публичная функция: L, R — Float32Array; strengths — список сил.
+   Длинный трек — кусками по 10 с с запасом 1 с (все зависимости алгоритма
+   короче 0.1 с, результат совпадает с обработкой целиком). */
+function deshimmer(L, R, sr, strengths, cutoff) {
+  let lo = DS.LO, hi = DS.HI;
+  if (cutoff) hi = Math.min(hi, cutoff * 0.97);
+  const n = L.length;
+  const res = strengths.map(() => [new Float32Array(n), new Float32Array(n)]);
+  const active = strengths.map((s) => s > 0 && hi > lo + 500);
+  if (!active.some(Boolean)) return strengths.map(() => [Float32Array.from(L), Float32Array.from(R)]);
+  const chunk = Math.floor(Math.floor(DS.CHUNK_S * sr) / DS.HOP) * DS.HOP;
+  const margin = Math.floor(Math.floor(DS.MARGIN_S * sr) / DS.HOP) * DS.HOP;
+  const spans = n <= chunk + 2 * margin ? [[0, n, 0, n]] : [];
+  if (!spans.length) for (let a = 0; a < n; a += chunk) {
+    const b = Math.min(n, a + chunk);
+    spans.push([a, b, Math.max(0, a - margin), Math.min(n, b + margin)]);
+  }
+  for (const [a, b, s0, s1] of spans) {
+    const parts = dsProcess(L.subarray(s0, s1), R.subarray(s0, s1), sr, strengths, lo, hi);
+    parts.forEach(([oL, oR], j) => {
+      if (!active[j]) { res[j][0].set(L.subarray(a, b), a); res[j][1].set(R.subarray(a, b), a); return; }
+      res[j][0].set(oL.subarray(a - s0, b - s0), a); res[j][1].set(oR.subarray(a - s0, b - s0), a);
+    });
+  }
+  return res;
+}
+
+/* Сколько энергии полосы чистка сняла бы на полной силе, дБ — для авто-режима. */
+function shimmerAmount(L, R, sr, cutoff) {
+  let lo = DS.LO, hi = DS.HI;
+  if (cutoff) hi = Math.min(hi, cutoff * 0.97);
+  if (hi <= lo + 500) return 0;
+  const N = DS.N, k0 = Math.ceil(lo * N / sr), k1 = Math.floor(hi * N / sr);
+  const chunk = Math.floor(Math.floor(DS.CHUNK_S * sr) / DS.HOP) * DS.HOP;
+  let tot = 0, kept = 0;
+  const pDb = (p) => 10 * Math.log10(p + 1e-24);
+  for (let a = 0; a < L.length; a += chunk) {
+    const b = Math.min(L.length, a + chunk);
+    if (b - a < N) continue;
+    const m = new Float64Array(b - a), s = new Float64Array(b - a);
+    for (let i = a; i < b; i++) { m[i - a] = (L[i] + R[i]) * 0.5; s[i - a] = (L[i] - R[i]) * 0.5; }
+    for (const [sig, st] of [[m, DS.MID], [s, 1.0]]) {
+      const S = dsStft(sig), G = dsUnitGains(S, sr, lo, hi, pDb);
+      const nb = G ? G.k1 - G.k0 + 1 : 0;
+      for (let f = 0; f < S.nf; f++) for (let k = k0; k <= k1; k++) {
+        const P = S.re[f * N + k] ** 2 + S.im[f * N + k] ** 2;
+        tot += P;
+        const q = k - (G ? G.k0 : 0);
+        kept += P * (G && q >= 0 && q < nb ? Math.pow(10, st * G.gdb[f * nb + q] / 10) : 1);
+      }
+    }
+  }
+  return 10 * Math.log10(tot / Math.max(kept, 1e-24));
+}
+
+async function renderChain(buffer, p, cut, feedBuf) {
   const sr = buffer.sampleRate;
   const nyq = sr / 2;
   const ctx = new OfflineAudioContext(2, buffer.length, sr);
@@ -1257,9 +1496,10 @@ async function renderChain(buffer, p, cut) {
   // Новый верх: синтезируется отдельным проходом, затем его уровень
   // выставляется покадрово по огибающей (как в Python-версии) —
   // air = 1.0 означает естественное продолжение спектра выше среза.
-  const synth = await renderSynth(buffer, p, cut);
+  const feed = feedBuf || buffer;
+  const synth = await renderSynth(feed, p, cut);
   if (synth) {
-    const g = envelopeGain(monoOf(buffer), monoOf(synth), sr, cut.hz);
+    const g = envelopeGain(monoOf(feed), monoOf(synth), sr, cut.hz);
     const wetBuf = ctx.createBuffer(2, buffer.length, sr);
     for (let c = 0; c < 2; c++) {
       const sd = synth.getChannelData(c), wd = wetBuf.getChannelData(c);
@@ -1588,10 +1828,10 @@ function encodeWav24(buffer) {
    ============================================================ */
 
 const PRESETS = {
-  mp3:  { air: 0.70, drive: 0.65, shelf: 3.0, mud: -2.5, width: 0.35, glue: 0 },
-  wav:  { air: 0.45, drive: 0.45, shelf: 2.0, mud: -1.5, width: 0.25, glue: 0 },
-  air:  { air: 0.60, drive: 0.50, shelf: 2.5, mud: 0.0,  width: 0.00, glue: 0 },
-  flat: { air: 0.00, drive: 0.00, shelf: 0.0, mud: 0.0,  width: 0.00, glue: 0 }
+  mp3:  { air: 0.70, drive: 0.65, shelf: 3.0, mud: -2.5, width: 0.35, glue: 0, deshimmer: 0.6 },
+  wav:  { air: 0.45, drive: 0.45, shelf: 2.0, mud: -1.5, width: 0.25, glue: 0, deshimmer: 0.5 },
+  air:  { air: 0.60, drive: 0.50, shelf: 2.5, mud: 0.0,  width: 0.00, glue: 0, deshimmer: 0.5 },
+  flat: { air: 0.00, drive: 0.00, shelf: 0.0, mud: 0.0,  width: 0.00, glue: 0, deshimmer: 0.0 }
 };
 
 /* Master Assistant: параметры считаются из самого трека, а не берутся
@@ -1616,7 +1856,12 @@ function computeAutoParams(t) {
   const widthNow = stereoWidthRatio(t.orig);
   const width = Math.max(0, Math.min(0.5, 0.45 - 0.35 * widthNow));
 
-  return { air, drive, shelf, mud, width, glue: 0 };
+  const o = t.orig;
+  const L0 = o.getChannelData(0), R0 = o.numberOfChannels > 1 ? o.getChannelData(1) : L0;
+  const amt = shimmerAmount(L0, R0, o.sampleRate, cut.fullRange ? null : cut.hz);
+  const desh = Math.max(0.3, Math.min(0.8, 0.3 + 0.25 * amt));
+
+  return { air, drive, shelf, mud, width, glue: 0, deshimmer: desh };
 }
 
 const state = {
@@ -1711,7 +1956,24 @@ async function processTrack(t) {
   await new Promise((r) => setTimeout(r, 0));
 
   const p = state.params;
-  const rendered = await renderChain(t.orig, p, t.cut);
+
+  // Сначала чистим, потом достраиваем: экситер питается той же полосой,
+  // где живёт шиммер Suno. Сухой путь чистится на выбранной силе, питание
+  // экситера — вдвое сильнее (не выше 1.0). Обе версии — из одного анализа.
+  let dryBuf = t.orig, feedBuf = null;
+  if (p.deshimmer > 0) {
+    const o = t.orig, sr0 = o.sampleRate;
+    const L0 = o.getChannelData(0), R0 = o.numberOfChannels > 1 ? o.getChannelData(1) : L0;
+    const [dry, feed] = deshimmer(L0, R0, sr0, [p.deshimmer, Math.min(1, 2 * p.deshimmer)],
+                                  t.cut.fullRange ? null : t.cut.hz);
+    const mk = ([l, r]) => {
+      const bf = getDecodeCtx().createBuffer(2, o.length, sr0);
+      bf.copyToChannel(l, 0); bf.copyToChannel(r, 1); return bf;
+    };
+    dryBuf = mk(dry); feedBuf = mk(feed);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  const rendered = await renderChain(dryBuf, p, t.cut, feedBuf);
 
   const sr = rendered.sampleRate;
   const chans = [];
@@ -2041,6 +2303,7 @@ function download(t) {
 /* ---------- слайдеры ---------- */
 
 const controls = [
+  { el: 'cDeshimmer', out: 'oDeshimmer', key: 'deshimmer', map: (v) => v / 100, fmt: (v) => (v === 0 ? 'выкл' : String(Math.round(v * 100))) },
   { el: 'cAir',    out: 'oAir',    key: 'air',    map: (v) => v / 100,        fmt: (v) => String(Math.round(v * 100)) },
   { el: 'cDrive',  out: 'oDrive',  key: 'drive',  map: (v) => v / 100,        fmt: (v) => String(Math.round(v * 100)) },
   { el: 'cShelf',  out: 'oShelf',  key: 'shelf',  map: (v) => v / 10,         fmt: (v) => fmtDb(v) },

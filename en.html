@@ -11,8 +11,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root {
-  /* Токены сняты пипеткой со скриншотов iDentity Prompt Engine / Music DNA —
-     это тот же визуальный язык, не отдельная палитра. */
+  /* Tokens lifted with a pixel-picker from iDentity Prompt Engine / Music DNA screenshots —
+     this is the same visual language, not a separate palette. */
   --bg: #0F1313;
   --panel: #151A1D;
   --panel-2: #12171A;
@@ -39,8 +39,8 @@
 
 * { box-sizing: border-box; }
 
-/* display: grid/flex на .readout/.transport/.scope-legend перебивал бы
-   атрибут hidden — атрибут должен побеждать всегда. */
+/* display: grid/flex on .readout/.transport/.scope-legend would override
+   the hidden attribute — the attribute must always win. */
 [hidden] { display: none !important; }
 
 html, body {
@@ -62,7 +62,7 @@ body {
 
 p { margin: 0 0 12px; }
 
-/* ---------- эйброу / лейблы секций — моно, трекинг, капс ---------- */
+/* ---------- eyebrow / section labels — mono, tracking, caps ---------- */
 
 .eyebrow {
   font-family: var(--font-mono);
@@ -331,9 +331,9 @@ p { margin: 0 0 12px; }
   flex-direction: column;
 }
 
-/* Пустой список треков не должен обрываться бордером на середине
-   высоты — растягиваем на всю панель и центрируем сообщение,
-   вместо того чтобы оставлять его прилипшим к верху над пустотой. */
+/* An empty track list mustn't end in a border halfway down the
+   height — stretch it across the whole panel and centre the message,
+   instead of leaving it stuck to the top above a void. */
 .tracks-body {
   flex: 1;
   display: flex;
@@ -420,7 +420,7 @@ p { margin: 0 0 12px; }
   flex-wrap: wrap;
 }
 
-/* ---------- presets / chips — двусостояние карточек Music DNA ---------- */
+/* ---------- presets / chips — Music DNA's two-state cards ---------- */
 
 .presets {
   display: grid;
@@ -521,7 +521,7 @@ input[type="range"]::-moz-range-thumb {
 input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgba(255,127,68,0.35); }
 input[type="range"]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px rgba(255,127,68,0.35); }
 
-/* ---------- buttons — «Save preset» = основной стиль, дефолт как selected-карточка ---------- */
+/* ---------- buttons — "Save preset" = the primary style, the default looks like a selected card ---------- */
 
 .btn {
   background: var(--accent-fill);
@@ -681,6 +681,12 @@ footer {
       <h3 class="subsection-label">Top end &amp; tone</h3>
 
       <div class="ctl">
+        <label for="cDeshimmer">Suno shimmer cleanup</label>
+        <input type="range" id="cDeshimmer" min="0" max="100" value="60">
+        <output id="oDeshimmer">60</output>
+      </div>
+
+      <div class="ctl">
         <label for="cAir">How much top end to rebuild</label>
         <input type="range" id="cAir" min="0" max="100" value="70">
         <output id="oAir">70</output>
@@ -737,13 +743,13 @@ footer {
 </footer>
 
 <script>
-/* Airband — восстановление срезанного верха в треках из Suno.
-   Всё считается локально в браузере. */
+/* Airband — restoring the top end cut from tracks generated in Suno.
+   Everything is worked out locally in the browser. */
 
 'use strict';
 
 /* ============================================================
-   1. FFT и спектральный анализ
+   1. FFT and spectral analysis
    ============================================================ */
 
 function makeFFT(n) {
@@ -796,9 +802,9 @@ const hannWin = (() => {
   return w;
 })();
 
-/* Усреднённый спектр мощности по всему треку.
-   Берём до 90 окон, равномерно раскиданных по длине,
-   и пропускаем тихие куски, чтобы тишина не занижала верх. */
+/* Average power spectrum across the whole track.
+   Up to 90 windows, spread evenly along the length,
+   and quiet stretches are skipped so that silence doesn't drag the top down. */
 function powerSpectrum(buffer) {
   const nBins = FFT_SIZE / 2;
   const acc = new Float64Array(nBins);
@@ -813,7 +819,7 @@ function powerSpectrum(buffer) {
   const re = new Float64Array(FFT_SIZE);
   const im = new Float64Array(FFT_SIZE);
 
-  // Порог тишины: считаем общий RMS по разреженной выборке.
+  // Silence threshold: take the overall RMS from a sparse sample.
   let rough = 0, cnt = 0;
   for (let i = 0; i < len; i += 997) { const v = chans[0][i]; rough += v * v; cnt++; }
   const globalRms = Math.sqrt(rough / Math.max(1, cnt));
@@ -846,7 +852,7 @@ function powerSpectrum(buffer) {
   return { power: acc, frames };
 }
 
-/* Сглаживание по 1/12 октавы — иначе кривая выглядит как шум. */
+/* Smoothing by 1/12 of an octave — otherwise the curve looks like noise. */
 function smoothOctave(power, sampleRate, frac) {
   const n = power.length;
   const binHz = sampleRate / FFT_SIZE;
@@ -871,8 +877,8 @@ function toDb(power) {
   return out;
 }
 
-/* Опорный уровень — 80-й перцентиль в полосе 1–5 кГц.
-   Устойчив и к тихим, и к перегруженным трекам. */
+/* Reference level — the 80th percentile in the 1–5 kHz band.
+   Robust for both quiet and overloaded tracks. */
 function bandReference(db, sampleRate) {
   const binHz = sampleRate / FFT_SIZE;
   const lo = Math.max(1, Math.floor(1000 / binHz));
@@ -884,8 +890,8 @@ function bandReference(db, sampleRate) {
   return arr[Math.floor(arr.length * 0.8)];
 }
 
-/* Ищем обрыв: идём сверху вниз, находим первую частоту,
-   где три бина подряд выше порога. */
+/* Look for the cliff: go from the top down, find the first frequency
+   where three bins in a row are above the threshold. */
 function detectCutoff(db, sampleRate) {
   const binHz = sampleRate / FFT_SIZE;
   const nyq = sampleRate / 2;
@@ -901,9 +907,9 @@ function detectCutoff(db, sampleRate) {
   const full = f > nyq * 0.9;
   const hz = Math.max(7000, Math.min(f, nyq * 0.985));
 
-  // Крутизна обрыва: перепад за треть октавы над точкой среза.
-  // Нужна для авто-параметров (Master Assistant) — жёсткий MP3-срез
-  // и мягкий WAV-скат требуют разной агрессии восстановления.
+  // Cliff steepness: the drop across a third of an octave above the cutoff point.
+  // Needed for auto parameters (Master Assistant) — a hard MP3 cliff
+  // and a soft WAV rolloff call for different aggression in restoration.
   const aboveLo = Math.ceil(hz / binHz) + 1;
   const aboveHi = Math.min(db.length - 1, Math.floor(Math.min(hz * 1.26, nyq * 0.99) / binHz));
   let steepSum = 0, steepN = 0;
@@ -918,7 +924,7 @@ function detectCutoff(db, sampleRate) {
   };
 }
 
-/* Энергия выше точки среза, в дБ — показываем, сколько реально добавили. */
+/* Energy above the cutoff point, in dB — shows how much was really added. */
 function energyAbove(db, sampleRate, fromHz) {
   const binHz = sampleRate / FFT_SIZE;
   const lo = Math.floor(fromHz / binHz);
@@ -929,8 +935,8 @@ function energyAbove(db, sampleRate, fromHz) {
   return 10 * Math.log10(s / (hi - lo + 1) + 1e-20);
 }
 
-/* Насколько 250/* Насколько 250–400 Гц реально выпирает над серединой (600–2500 Гц).
-   Положительное — там правда лишнее; ноль или меньше — резать нечего. */
+/* How far 250–400 Hz really sticks out above the mids (600–2500 Hz).
+   Positive means there's genuinely too much there; zero or less — nothing to cut. */
 function mudExcessDb(db, sampleRate) {
   return bandEnergyDb(db, sampleRate, 250, 400) - bandEnergyDb(db, sampleRate, 600, 2500);
 }
@@ -945,8 +951,8 @@ function bandEnergyDb(db, sampleRate, lo, hi) {
   return 10 * Math.log10(s / (i1 - i0 + 1) + 1e-20);
 }
 
-/* Сколько в треке уже есть стерео-информации/* Сколько в треке уже есть стерео-информации: RMS(side) / RMS(mid).
-   0 — чистое моно, ~1 и выше — уже широкий материал. */
+/* How much stereo information a track already has: RMS(side) / RMS(mid).
+   0 is pure mono, ~1 and above is already wide material. */
 function stereoWidthRatio(buffer) {
   if (buffer.numberOfChannels < 2) return 0;
   const L = buffer.getChannelData(0), R = buffer.getChannelData(1);
@@ -966,7 +972,7 @@ function stereoWidthRatio(buffer) {
 }
 
 /* ============================================================
-   2. Обработка: цепь в OfflineAudioContext
+   2. Processing: the chain in OfflineAudioContext
    ============================================================ */
 
 function bq(ctx, type, freq, q) {
@@ -977,13 +983,13 @@ function bq(ctx, type, freq, q) {
   return f;
 }
 
-/* Кривая насыщения — та же, что в Python-версии (_saturate):
-   tanh(v) · (1 + 0.25 · tanh(v)). Нечётные гармоники дают яркость,
-   чётные (за счёт асимметрии) — теплоту. Раньше здесь стояла другая
-   формула, tanh(2.5x + 0.35x²): насыщение в разы жёстче, и новый верх
-   получался с наклоном — избыток сразу над срезом и провал у предела.
-   WaveShaper принимает вход только в диапазоне ±1, поэтому сигнал
-   подаётся делённым на SHAPER_K, а кривая растянута в SHAPER_K раз. */
+/* The saturation curve — the same as in the Python version (_saturate):
+   tanh(v) · (1 + 0.25 · tanh(v)). Odd harmonics give brightness,
+   even ones (thanks to the asymmetry) give warmth. There used to be a
+   different formula here, tanh(2.5x + 0.35x²): saturation several times harsher,
+   and the new top end came out tilted — an excess just above the cutoff and a
+   dip at the limit. WaveShaper only accepts input in the range ±1, so the signal
+   is fed in divided by SHAPER_K, and the curve is stretched SHAPER_K times. */
 const SHAPER_K = 4;
 const shaperCurve = (() => {
   const n = 16384;
@@ -1031,10 +1037,10 @@ function attachWidth(ctx, node, w) {
   return mg;
 }
 
-/* Слежение за огибающей — порт _envelope_gain из Python-версии (restore.py).
-   Наклон спектра меряется по двум полосам под срезом и экстраполируется
-   выше него: получается уровень, который был бы у материала без обрезки.
-   Новый верх выводится на этот уровень кадр за кадром. */
+/* Envelope following — a port of _envelope_gain from the Python version (restore.py).
+   The spectral slope is measured across two bands below the cutoff and extrapolated
+   above it: that gives the level the material would have had without the cut.
+   The new top end is brought to that level frame by frame. */
 const ENV_N = 2048, ENV_HOP = 512;
 const envFFT = makeFFT(ENV_N);
 const envWin = (() => {
@@ -1098,11 +1104,11 @@ function envelopeGain(xMono, sMono, sr, cutoff) {
     slope = Math.max(-30, Math.min(-2, slope));
     const target = l2[i] + slope * Math.log2(cf / c2);
     let g = Math.max(-30, Math.min(18, target - ls[i]));
-    if (l2[i] < p95 - 45) g = -60;   // почти тишина в опорной полосе — шум не раздуваем
+    if (l2[i] < p95 - 45) g = -60;   // the reference band is nearly silent — don't inflate the noise
     gdb[i] = g;
   }
 
-  // сглаживание по времени ~25 мс окном Ханна (как np.hanning + convolve 'same')
+  // smoothing over time, ~25 ms Hann window (like np.hanning + convolve 'same')
   const k = Math.max(3, Math.round(0.025 * sr / ENV_HOP) | 1);
   const ker = new Float64Array(k);
   let ks = 0;
@@ -1116,7 +1122,7 @@ function envelopeGain(xMono, sMono, sr, cutoff) {
     sm[i] = s;
   }
 
-  // в линейный масштаб и интерполяция кадров на отсчёты
+  // to a linear scale, and interpolating frames onto samples
   const g = new Float32Array(len);
   const gl = new Float64Array(n);
   for (let i = 0; i < n; i++) gl[i] = Math.pow(10, sm[i] / 20);
@@ -1130,9 +1136,9 @@ function envelopeGain(xMono, sMono, sr, cutoff) {
   return g;
 }
 
-/* Полосовой FIR с линейной фазой — порт firwin(..., pass_zero=False,
-   window='blackmanharris') из Python-версии. Свёртка через FFT
-   (overlap-add) с компенсацией задержки, как fftconvolve(mode='same'). */
+/* A band-pass FIR with linear phase — a port of firwin(..., pass_zero=False,
+   window='blackmanharris') from the Python version. Convolution via FFT
+   (overlap-add) with delay compensation, like fftconvolve(mode='same'). */
 function firBandpass(lo, hi, sr, taps) {
   const N = taps | 1, M = (N - 1) / 2, h = new Float64Array(N);
   const a = lo / (sr / 2), b = hi / (sr / 2);
@@ -1143,7 +1149,7 @@ function firBandpass(lo, hi, sr, taps) {
       + 0.14128 * Math.cos(4 * Math.PI * n / (N - 1)) - 0.01168 * Math.cos(6 * Math.PI * n / (N - 1));
     h[n] = (b * sinc(b * t) - a * sinc(a * t)) * w;
   }
-  // как firwin(scale=True): единичное усиление в центре полосы пропускания
+  // like firwin(scale=True): unit gain at the centre of the passband
   const fc = (a + b) / 2;
   let re = 0, im = 0;
   for (let n = 0; n < N; n++) { re += h[n] * Math.cos(Math.PI * fc * (n - M)); im += h[n] * Math.sin(Math.PI * fc * (n - M)); }
@@ -1167,7 +1173,7 @@ function convolveSame(x, h) {
     const n = Math.min(B, len - off);
     for (let i = 0; i < n; i++) re[i] = x[off + i];
     fft(re, im);
-    for (let k = 0; k < F; k++) {   // произведение спектров, затем обратное БПФ через сопряжение
+    for (let k = 0; k < F; k++) {   // product of the spectra, then the inverse FFT via conjugation
       const r = re[k] * Hr[k] - im[k] * Hi[k], q = re[k] * Hi[k] + im[k] * Hr[k];
       re[k] = r; im[k] = -q;
     }
@@ -1180,9 +1186,9 @@ function convolveSame(x, h) {
   return y;
 }
 
-/* Синтез нового верха отдельным проходом — только ветка экситера, без
-   сухого сигнала. Так её можно измерить и выставить уровень по огибающей,
-   прежде чем подмешивать в основную цепочку. */
+/* Synthesising the new top end in a separate pass — the exciter branch only, without
+   the dry signal. That way it can be measured and its level set from the envelope
+   before it's mixed into the main chain. */
 async function renderSynth(buffer, p, cut) {
   const sr = buffer.sampleRate;
   const nyq = sr / 2;
@@ -1212,10 +1218,10 @@ async function renderSynth(buffer, p, cut) {
   src.start();
   const raw = await ctx.startRendering();
 
-  // Выше среза оставляем только новый материал — FIR с линейной фазой и
-  // ровной полосой до самого верха, как в Python-версии. Раньше здесь были
-  // пологие биквады: на 21 кГц они уже срезали около 2.5 дБ, и
-  // восстановленный верх заваливался к пределу.
+  // Above the cutoff we keep only the new material — a linear-phase FIR with
+  // a flat passband right up to the top, as in the Python version. There used to
+  // be gentle biquads here: at 21 kHz they were already cutting about 2.5 dB, and
+  // the restored top end sagged towards the limit.
   const top = Math.min(cut.hz * 0.99, nyq * 0.9);
   const h = firBandpass(top, nyq * 0.94, sr, 1025);
   for (let c = 0; c < raw.numberOfChannels; c++) {
@@ -1234,7 +1240,240 @@ function monoOf(buffer) {
   return m;
 }
 
-async function renderChain(buffer, p, cut) {
+/* De-shimmer — a port of deshimmer.py from the Python version, checked against its results.
+   An original implementation; the ideas were checked against the public descriptions of deshimmer
+   (TheApeMachine) and Shimmer (henricksmedia), their code was not used.
+   Suppresses Suno's narrow flickering artefacts in the 4.5–14 kHz range before
+   the exciter can build new harmonics out of them upwards. */
+const DS = {
+  N: 2048, HOP: 512, W: 12, THR: 8.0, KNEE: 3.0, TARGET: 1.0, MAX_RED: 30.0,
+  DENS_LO: 0.05, DENS_HI: 0.25, FL_LO: 2.5, FL_HI: 5.0, FL_WIN: 5,
+  FLUX_DB: 6.0, HOLD_S: 0.07, REL_S: 0.05, MID: 0.6, EDGE_HZ: 200.0,
+  CHUNK_S: 10.0, MARGIN_S: 1.0, LO: 4500.0, HI: 14000.0
+};
+const dsFFT = makeFFT(DS.N);
+const dsWin = (() => {
+  const w = new Float64Array(DS.N);
+  for (let i = 0; i < DS.N; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / DS.N);
+  return w;
+})();
+
+/* STFT: the signal is padded with zeros by N on each side, as in Python. */
+function dsStft(x) {
+  const N = DS.N, H = DS.HOP, plen = x.length + 2 * N;
+  const nf = 1 + Math.floor((plen - N) / H);
+  const re = new Float64Array(nf * N), im = new Float64Array(nf * N);
+  const fr = new Float64Array(N), fi = new Float64Array(N);
+  for (let f = 0; f < nf; f++) {
+    const off = f * H - N;
+    for (let i = 0; i < N; i++) {
+      const j = off + i;
+      fr[i] = (j >= 0 && j < x.length ? x[j] : 0) * dsWin[i]; fi[i] = 0;
+    }
+    dsFFT(fr, fi);
+    re.set(fr, f * N); im.set(fi, f * N);
+  }
+  return { re, im, nf, plen };
+}
+
+/* Inverse STFT with a gain mask (in dB, bins k0..k1 only). */
+function dsIstft(S, n, k0, k1, gdb, scale) {
+  const N = DS.N, H = DS.HOP, nb = k1 - k0 + 1;
+  const y = new Float64Array(S.plen);
+  const fr = new Float64Array(N), fi = new Float64Array(N);
+  for (let f = 0; f < S.nf; f++) {
+    for (let i = 0; i < N; i++) { fr[i] = S.re[f * N + i]; fi[i] = -S.im[f * N + i]; }
+    if (gdb && scale > 0) {
+      for (let q = 0; q < nb; q++) {
+        const g = Math.pow(10, scale * gdb[f * nb + q] / 20);
+        const k = k0 + q;
+        fr[k] *= g; fi[k] *= g;
+        if (k > 0 && k < N / 2) { fr[N - k] *= g; fi[N - k] *= g; }
+      }
+    }
+    dsFFT(fr, fi);   // inverse via conjugation: conj(fft(conj(X)))/N
+    const off = f * H;
+    for (let i = 0; i < N; i++) y[off + i] += (fr[i] / N) * dsWin[i];
+  }
+  const out = new Float64Array(n);
+  for (let i = 0; i < n; i++) out[i] = y[N + i] / 1.5;
+  return out;
+}
+
+
+/* The suppression mask in dB at unit strength. Strength only enters as a multiplier,
+   and widening the mask and the release don't interfere with that multiplier — so
+   for any strength the mask = strength × this mask. */
+function dsUnitGains(S, sr, lo, hi, magOffsetDb) {
+  const N = DS.N, H = DS.HOP, W = DS.W, nf = S.nf, nbAll = N / 2 + 1;
+  const binhz = sr / N;
+  const k0 = Math.ceil(lo / binhz), k1 = Math.floor(hi / binhz);
+  if (k1 - k0 < 2 * W + 3) return null;
+  const a = Math.max(0, k0 - W), b = Math.min(nbAll, k1 + W + 1), segLen = b - a;
+  const nb = k1 - k0 + 1;
+  const ex = new Float64Array(nf * nb), segv = new Float64Array(segLen), segP = new Float64Array(segLen);
+  const seg32 = new Float32Array(segLen), win = new Float32Array(2 * W + 1);
+  const dens = new Float64Array(nf), e = new Float64Array(nf);
+  for (let f = 0; f < nf; f++) {
+    for (let c = 0; c < segLen; c++) {
+      const k = a + c, r = S.re[f * N + k], i = S.im[f * N + k];
+      segP[c] = r * r + i * i;
+      segv[c] = magOffsetDb(segP[c]);
+      seg32[c] = segv[c];
+    }
+    // Sliding median across frequency: the window is kept sorted, and on a shift
+    // of one bin one value is taken out and one is put in —
+    // instead of finding the median from scratch for every bin.
+    let cnt = 0, psum = 0;
+    const cl = (c) => seg32[Math.min(segLen - 1, Math.max(0, c))];
+    const c0 = k0 - a;
+    for (let t = -W; t <= W; t++) win[t + W] = cl(c0 + t);
+    win.sort();
+    for (let q = 0; q < nb; q++) {
+      const c = c0 + q;
+      if (q > 0) {
+        const outV = cl(c - 1 - W), inV = cl(c + W);
+        let lo2 = 0, hi2 = win.length - 1;
+        while (lo2 < hi2) { const m = (lo2 + hi2) >> 1; if (win[m] < outV) lo2 = m + 1; else hi2 = m; }
+        let p = lo2;
+        if (inV >= outV) {
+          while (p + 1 < win.length && win[p + 1] < inV) { win[p] = win[p + 1]; p++; }
+        } else {
+          while (p > 0 && win[p - 1] > inV) { win[p] = win[p - 1]; p--; }
+        }
+        win[p] = inV;
+      }
+      const v = segv[c] - win[W];
+      ex[f * nb + q] = v;
+      if (v > DS.THR) cnt++;
+      psum += segP[c];
+    }
+    dens[f] = Math.max(0, Math.min(1, (DS.DENS_HI - cnt / nb) / (DS.DENS_HI - DS.DENS_LO)));
+    e[f] = 10 * Math.log10(psum + 1e-20);
+  }
+  // transients: a jump in the band's energy — protection for HOLD_S
+  const trans = new Float64Array(nf).fill(1);
+  const holdN = Math.ceil(DS.HOLD_S * sr / H); let h = 0;
+  for (let f = 0; f < nf; f++) {
+    if (f > 0 && e[f] - e[f - 1] > DS.FLUX_DB) h = holdN;
+    if (h > 0) { trans[f] = 0; h--; }
+  }
+  // suppression: bring an outlier down to the floor, only if it flickers
+  // a running sum of level jumps — row by row over frames (memory contiguous)
+  const gdb = new Float64Array(nf * nb);
+  const cs = new Float64Array((nf + 1) * nb);
+  for (let f = 0; f < nf; f++) {
+    const r0 = f * nb, rp = (f - 1) * nb, c0r = f * nb, c1r = (f + 1) * nb;
+    for (let q = 0; q < nb; q++) {
+      const ec = Math.min(40, Math.max(0, ex[r0 + q]));
+      const pe = f === 0 ? ec : Math.min(40, Math.max(0, ex[rp + q]));
+      cs[c1r + q] = cs[c0r + q] + Math.abs(ec - pe);
+    }
+  }
+  const kn = 1 / (2 * DS.KNEE), fl = 1 / (DS.FL_HI - DS.FL_LO);
+  for (let f = 0; f < nf; f++) {
+    const lo_i = Math.max(0, f - DS.FL_WIN), hi_i = Math.min(nf, f + DS.FL_WIN + 1);
+    const inv = 1 / (hi_i - lo_i), w = dens[f] * trans[f], r0 = f * nb, rh = hi_i * nb, rl = lo_i * nb;
+    for (let q = 0; q < nb; q++) {
+      const v = ex[r0 + q];
+      let t = (v - (DS.THR - DS.KNEE)) * kn; t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const dv = v - DS.TARGET;
+      let red = t * t * (3 - 2 * t) * (dv < 0 ? 0 : dv > DS.MAX_RED ? DS.MAX_RED : dv);
+      let fk = ((cs[rh + q] - cs[rl + q]) * inv - DS.FL_LO) * fl; fk = fk < 0 ? 0 : fk > 1 ? 1 : fk;
+      gdb[r0 + q] = -red * fk * w;
+    }
+  }
+  // widen the mask onto neighbouring bins, then a smooth release over time
+  const out = new Float64Array(nf * nb);
+  for (let f = 0; f < nf; f++) for (let q = 0; q < nb; q++) {
+    const l = gdb[f * nb + Math.max(0, q - 1)], m = gdb[f * nb + q], r = gdb[f * nb + Math.min(nb - 1, q + 1)];
+    out[f * nb + q] = Math.min(Math.min(l, m), r);
+  }
+  const rr = Math.exp(-H / (sr * DS.REL_S));
+  for (let f = 1; f < nf; f++) for (let q = 0; q < nb; q++)
+    out[f * nb + q] = Math.min(out[f * nb + q], out[(f - 1) * nb + q] * rr);
+  const edge = new Float64Array(nb);
+  for (let q = 0; q < nb; q++) {
+    const fk = (k0 + q) * binhz;
+    edge[q] = Math.max(0, Math.min(1, Math.min(fk - lo, hi - fk) / DS.EDGE_HZ));
+  }
+  for (let f = 0; f < nf; f++) { const r0 = f * nb; for (let q = 0; q < nb; q++) out[r0 + q] *= edge[q]; }
+  return { k0, k1, gdb: out };
+}
+
+const dsAmpDb = (p) => 20 * Math.log10(Math.sqrt(p) + 1e-12);
+
+/* Processing one chunk: mid/side, one mask per channel, any number of strengths. */
+function dsProcess(L, R, sr, strengths, lo, hi) {
+  const n = L.length, mid = new Float64Array(n), side = new Float64Array(n);
+  for (let i = 0; i < n; i++) { mid[i] = (L[i] + R[i]) * 0.5; side[i] = (L[i] - R[i]) * 0.5; }
+  const Sm = dsStft(mid), Ss = dsStft(side);
+  const Gm = dsUnitGains(Sm, sr, lo, hi, dsAmpDb), Gs = dsUnitGains(Ss, sr, lo, hi, dsAmpDb);
+  return strengths.map((s) => {
+    const m2 = Gm ? dsIstft(Sm, n, Gm.k0, Gm.k1, Gm.gdb, s * DS.MID) : dsIstft(Sm, n, 0, -1, null, 0);
+    const s2 = Gs ? dsIstft(Ss, n, Gs.k0, Gs.k1, Gs.gdb, s) : dsIstft(Ss, n, 0, -1, null, 0);
+    const oL = new Float32Array(n), oR = new Float32Array(n);
+    for (let i = 0; i < n; i++) { oL[i] = m2[i] + s2[i]; oR[i] = m2[i] - s2[i]; }
+    return [oL, oR];
+  });
+}
+
+/* The public function: L, R — Float32Array; strengths — a list of strengths.
+   A long track goes in 10 s chunks with a 1 s margin (every dependency in the algorithm
+   is shorter than 0.1 s, so the result matches processing the whole track at once). */
+function deshimmer(L, R, sr, strengths, cutoff) {
+  let lo = DS.LO, hi = DS.HI;
+  if (cutoff) hi = Math.min(hi, cutoff * 0.97);
+  const n = L.length;
+  const res = strengths.map(() => [new Float32Array(n), new Float32Array(n)]);
+  const active = strengths.map((s) => s > 0 && hi > lo + 500);
+  if (!active.some(Boolean)) return strengths.map(() => [Float32Array.from(L), Float32Array.from(R)]);
+  const chunk = Math.floor(Math.floor(DS.CHUNK_S * sr) / DS.HOP) * DS.HOP;
+  const margin = Math.floor(Math.floor(DS.MARGIN_S * sr) / DS.HOP) * DS.HOP;
+  const spans = n <= chunk + 2 * margin ? [[0, n, 0, n]] : [];
+  if (!spans.length) for (let a = 0; a < n; a += chunk) {
+    const b = Math.min(n, a + chunk);
+    spans.push([a, b, Math.max(0, a - margin), Math.min(n, b + margin)]);
+  }
+  for (const [a, b, s0, s1] of spans) {
+    const parts = dsProcess(L.subarray(s0, s1), R.subarray(s0, s1), sr, strengths, lo, hi);
+    parts.forEach(([oL, oR], j) => {
+      if (!active[j]) { res[j][0].set(L.subarray(a, b), a); res[j][1].set(R.subarray(a, b), a); return; }
+      res[j][0].set(oL.subarray(a - s0, b - s0), a); res[j][1].set(oR.subarray(a - s0, b - s0), a);
+    });
+  }
+  return res;
+}
+
+/* How much of the band's energy the cleaning would have removed at full strength, dB — for auto mode. */
+function shimmerAmount(L, R, sr, cutoff) {
+  let lo = DS.LO, hi = DS.HI;
+  if (cutoff) hi = Math.min(hi, cutoff * 0.97);
+  if (hi <= lo + 500) return 0;
+  const N = DS.N, k0 = Math.ceil(lo * N / sr), k1 = Math.floor(hi * N / sr);
+  const chunk = Math.floor(Math.floor(DS.CHUNK_S * sr) / DS.HOP) * DS.HOP;
+  let tot = 0, kept = 0;
+  const pDb = (p) => 10 * Math.log10(p + 1e-24);
+  for (let a = 0; a < L.length; a += chunk) {
+    const b = Math.min(L.length, a + chunk);
+    if (b - a < N) continue;
+    const m = new Float64Array(b - a), s = new Float64Array(b - a);
+    for (let i = a; i < b; i++) { m[i - a] = (L[i] + R[i]) * 0.5; s[i - a] = (L[i] - R[i]) * 0.5; }
+    for (const [sig, st] of [[m, DS.MID], [s, 1.0]]) {
+      const S = dsStft(sig), G = dsUnitGains(S, sr, lo, hi, pDb);
+      const nb = G ? G.k1 - G.k0 + 1 : 0;
+      for (let f = 0; f < S.nf; f++) for (let k = k0; k <= k1; k++) {
+        const P = S.re[f * N + k] ** 2 + S.im[f * N + k] ** 2;
+        tot += P;
+        const q = k - (G ? G.k0 : 0);
+        kept += P * (G && q >= 0 && q < nb ? Math.pow(10, st * G.gdb[f * nb + q] / 10) : 1);
+      }
+    }
+  }
+  return 10 * Math.log10(tot / Math.max(kept, 1e-24));
+}
+
+async function renderChain(buffer, p, cut, feedBuf) {
   const sr = buffer.sampleRate;
   const nyq = sr / 2;
   const ctx = new OfflineAudioContext(2, buffer.length, sr);
@@ -1254,12 +1493,13 @@ async function renderChain(buffer, p, cut) {
   const bus = ctx.createGain();
   pre.connect(bus);
 
-  // Новый верх: синтезируется отдельным проходом, затем его уровень
-  // выставляется покадрово по огибающей (как в Python-версии) —
-  // air = 1.0 означает естественное продолжение спектра выше среза.
-  const synth = await renderSynth(buffer, p, cut);
+  // The new top end: synthesised in a separate pass, then its level
+  // is set frame by frame from the envelope (as in the Python version) —
+  // air = 1.0 means the natural continuation of the spectrum above the cutoff.
+  const feed = feedBuf || buffer;
+  const synth = await renderSynth(feed, p, cut);
   if (synth) {
-    const g = envelopeGain(monoOf(buffer), monoOf(synth), sr, cut.hz);
+    const g = envelopeGain(monoOf(feed), monoOf(synth), sr, cut.hz);
     const wetBuf = ctx.createBuffer(2, buffer.length, sr);
     for (let c = 0; c < 2; c++) {
       const sd = synth.getChannelData(c), wd = wetBuf.getChannelData(c);
@@ -1301,11 +1541,11 @@ async function renderChain(buffer, p, cut) {
 }
 
 /* ============================================================
-   3. Громкость по ITU-R BS.1770 и лимитер
+   3. Loudness per ITU-R BS.1770 and the limiter
    ============================================================ */
 
 function biquadCoeffs(sampleRate) {
-  // Ступень 1: шельф головы, ступень 2: RLB highpass.
+  // Stage 1: the head shelf, stage 2: the RLB highpass.
   let f0 = 1681.974450955533;
   let G = 3.999843853973347;
   let Q = 0.7071752369554196;
@@ -1332,14 +1572,14 @@ function biquadCoeffs(sampleRate) {
     a1: (2 * (K * K - 1)) / a0,
     a2: (1 - K / Q + K * K) / a0
   };
-  // b нормируем на a0
+  // normalise b by a0
   s2.b0 /= a0; s2.b1 /= a0; s2.b2 /= a0;
   return [s1, s2];
 }
 
-/* K-взвешивание считается потоково и сразу сворачивается
-   в суммы по отрезкам 100 мс — блоки 400 мс собираются из четырёх.
-   Так не нужно держать в памяти отфильтрованную копию трека. */
+/* K-weighting is computed in a stream and folded straight
+   into sums over 100 ms segments — the 400 ms blocks are assembled from four.
+   That way there's no need to hold a filtered copy of the track in memory. */
 function measureLUFS(chans, sampleRate) {
   const [s1, s2] = biquadCoeffs(sampleRate);
   const len = chans[0].length;
@@ -1375,11 +1615,11 @@ function measureLUFS(chans, sampleRate) {
 
   const lk = (pw) => -0.691 + 10 * Math.log10(pw + 1e-20);
 
-  // Абсолютный гейт −70 LUFS
+  // Absolute gate −70 LUFS
   let sel = powers.filter((pw) => lk(pw) > -70);
   if (!sel.length) return -70;
 
-  // Относительный гейт −10 LU от средней мощности
+  // Relative gate −10 LU below the mean power
   const mean = sel.reduce((a, b) => a + b, 0) / sel.length;
   const relThr = lk(mean) - 10;
   sel = sel.filter((pw) => lk(pw) > relThr);
@@ -1389,13 +1629,13 @@ function measureLUFS(chans, sampleRate) {
   return lk(mean2);
 }
 
-/* True peak по ITU-R BS.1770-4, приложение 2: 4-кратная передискретизация
-   полифазным FIR-фильтром (4 фазы по 12 отводов, коэффициенты из стандарта).
-   Раньше здесь была линейная интерполяция между сэмплами — но точка на
-   прямой между двумя сэмплами не может быть выше большего из них, так что
-   по факту мерился обычный сэмпловый пик. На клипнутом материале это
-   недочитывало до 6 дБ. Сверено с эталоном scipy 16x: остаток 0.1–0.4 дБ —
-   свойство самого стандарта, его закрывает запас в лимитере. */
+/* True peak per ITU-R BS.1770-4, annex 2: 4x oversampling with a polyphase
+   FIR filter (4 phases of 12 taps, coefficients from the standard).
+   This used to be linear interpolation between samples — but a point on the
+   straight line between two samples can't be higher than the larger of them, so
+   in practice it measured plain sample peak. On clipped material that
+   under-read by up to 6 dB. Checked against a scipy 16x reference: a remainder
+   of 0.1–0.4 dB — a property of the standard itself, which the limiter's margin covers. */
 const TP_H0 = new Float64Array([0.0017089843750, 0.0109863281250, -0.0196533203125, 0.0332031250000,
   -0.0594482421875, 0.1373291015625, 0.9721679687500, -0.1022949218750,
   0.0476074218750, -0.0266113281250, 0.0148925781250, -0.0083007812500]);
@@ -1411,8 +1651,8 @@ const TP_H3 = new Float64Array([-0.0083007812500, 0.0148925781250, -0.0266113281
 const TP_TAPS = 12;
 const TP_DELAY = 6;
 
-/* Огибающая true peak: для каждого сэмпла — максимум по каналам из самого
-   сэмпла и четырёх межсэмпловых точек рядом с ним. */
+/* The true-peak envelope: for each sample — the maximum across channels of the sample
+   itself and the four inter-sample points next to it. */
 function truePeakEnvelope(chans) {
   const len = chans[0].length;
   const env = new Float32Array(len);
@@ -1454,17 +1694,19 @@ function truePeakDb(chans) {
   return 20 * Math.log10(peak + 1e-20);
 }
 
-/* Лимитер с упреждением: сначала считаем нужное усиление на каждый сэмпл,
-   потом берём скользящий минимум вперёд — гейн падает заранее,
-   до самого пика, без щелчков. */
+/* A lookahead limiter with a hold stage. The gain required at each sample is
+   worked out from the true-peak envelope and taken as a minimum looking ahead,
+   so it drops before the peak arrives, with no clicks; it's then held for 40 ms
+   after the peak and released smoothly. The hold stage was checked against
+   Hyrax from Matchering. */
 function limit(chans, ceilingLin, sampleRate, peakEnv) {
   const len = chans[0].length;
   const look = Math.max(1, Math.round(0.002 * sampleRate));
   const hold = Math.max(1, Math.round(0.04 * sampleRate));
-  // Требуемый гейн считается по огибающей true peak, а не по сэмплам.
-  // Запас 0.7 дБ откалиброван по независимому эталону (scipy, 16x):
-  // стандартная 4x-передискретизация на контенте у самого предела частот —
-  // а Airband как раз его и создаёт — недочитывает до ~0.55 дБ.
+  // The required gain is worked out from the true-peak envelope, not from samples.
+  // The 0.7 dB margin is calibrated against an independent reference (scipy, 16x):
+  // standard 4x oversampling on content right at the top of the frequency range —
+  // which is exactly what Airband creates — under-reads by up to ~0.55 dB.
   const env = peakEnv || truePeakEnvelope(chans);
   const inner = ceilingLin * Math.pow(10, -0.7 / 20);
   const req = new Float32Array(len);
@@ -1473,8 +1715,8 @@ function limit(chans, ceilingLin, sampleRate, peakEnv) {
     req[i] = p > inner ? inner / p : 1;
   }
 
-  // Скользящий минимум по окну [i, i+look] через монотонную деку.
-  // Дека не длиннее окна, поэтому держим её в кольцевом буфере.
+  // A sliding minimum over the window [i, i+look] using a monotonic deque.
+  // The deque is no longer than the window, so we keep it in a ring buffer.
   const gLook = new Float32Array(len);
   {
     const cap = look + 2;
@@ -1493,9 +1735,9 @@ function limit(chans, ceilingLin, sampleRate, peakEnv) {
     }
   }
 
-  // Hold: обратный минимум по [i-hold, i], поверх результата lookahead —
-  // после пика гейн не начинает отпускать немедленно, а держится на
-  // дне ещё `hold` отсчётов.
+  // Hold: a backward minimum over [i-hold, i], on top of the lookahead result —
+  // after the peak the gain doesn't start releasing at once, but stays at
+  // the bottom for another `hold` samples.
   const gHold = new Float32Array(len);
   {
     const cap = hold + 2;
@@ -1530,7 +1772,7 @@ function limit(chans, ceilingLin, sampleRate, peakEnv) {
 }
 
 /* ============================================================
-   4. Экспорт WAV 24 бита с TPDF-дизерингом
+   4. Exporting 24-bit WAV with TPDF dither
    ============================================================ */
 
 function encodeWav24(buffer) {
@@ -1578,22 +1820,22 @@ function encodeWav24(buffer) {
 }
 
 /* ============================================================
-   5. Состояние и параметры
+   5. State and parameters
    ============================================================ */
 
 const PRESETS = {
-  mp3:  { air: 0.70, drive: 0.65, shelf: 3.0, mud: -2.5, width: 0.35, glue: 0 },
-  wav:  { air: 0.45, drive: 0.45, shelf: 2.0, mud: -1.5, width: 0.25, glue: 0 },
-  air:  { air: 0.60, drive: 0.50, shelf: 2.5, mud: 0.0,  width: 0.00, glue: 0 },
-  flat: { air: 0.00, drive: 0.00, shelf: 0.0, mud: 0.0,  width: 0.00, glue: 0 }
+  mp3:  { air: 0.70, drive: 0.65, shelf: 3.0, mud: -2.5, width: 0.35, glue: 0, deshimmer: 0.6 },
+  wav:  { air: 0.45, drive: 0.45, shelf: 2.0, mud: -1.5, width: 0.25, glue: 0, deshimmer: 0.5 },
+  air:  { air: 0.60, drive: 0.50, shelf: 2.5, mud: 0.0,  width: 0.00, glue: 0, deshimmer: 0.5 },
+  flat: { air: 0.00, drive: 0.00, shelf: 0.0, mud: 0.0,  width: 0.00, glue: 0, deshimmer: 0.0 }
 };
 
-/* Master Assistant: параметры считаются из самого трека, а не берутся
-   готовыми из PRESETS. Та же логика, что в Python-версии — три вещи
-   меряются по-настоящему:
-   - крутизна обрыва -> насколько агрессивно достраивать верх;
-   - реальный избыток на 250-400 Гц -> чистить муть или нет;
-   - существующая стерео-ширина -> сколько ещё досыпать. */
+/* Master Assistant: the parameters are worked out from the track itself rather than taken
+   ready-made from PRESETS. The same logic as in the Python version — three things
+   are really measured:
+   - cutoff steepness -> how aggressively to rebuild the top end;
+   - the real excess at 250–400 Hz -> whether to clean up mud;
+   - the existing stereo width -> how much more to add. */
 function computeAutoParams(t) {
   const cut = t.cut;
   let air = 0, drive = 0, shelf = 0;
@@ -1610,7 +1852,12 @@ function computeAutoParams(t) {
   const widthNow = stereoWidthRatio(t.orig);
   const width = Math.max(0, Math.min(0.5, 0.45 - 0.35 * widthNow));
 
-  return { air, drive, shelf, mud, width, glue: 0 };
+  const o = t.orig;
+  const L0 = o.getChannelData(0), R0 = o.numberOfChannels > 1 ? o.getChannelData(1) : L0;
+  const amt = shimmerAmount(L0, R0, o.sampleRate, cut.fullRange ? null : cut.hz);
+  const desh = Math.max(0.3, Math.min(0.8, 0.3 + 0.25 * amt));
+
+  return { air, drive, shelf, mud, width, glue: 0, deshimmer: desh };
 }
 
 const state = {
@@ -1626,12 +1873,12 @@ const state = {
 const $ = (id) => document.getElementById(id);
 
 /* ============================================================
-   6. Загрузка файлов
+   6. Loading files
    ============================================================ */
 
-/* Декодируем в контекст с фиксированными 48 кГц.
-   decodeAudioData сам пересчитает частоту, а нам это на руку:
-   над срезом в 16 кГц остаётся 8 кГц свободного места под гармоники. */
+/* Decode into a context with a fixed 48 kHz.
+   decodeAudioData resamples by itself, which suits us:
+   above a 16 kHz cutoff it leaves 8 kHz of free room for the harmonics. */
 let decodeCtx = null;
 function getDecodeCtx() {
   if (!decodeCtx) {
@@ -1693,7 +1940,7 @@ function analyseOriginal(t) {
 }
 
 /* ============================================================
-   7. Обработка одного трека
+   7. Processing a single track
    ============================================================ */
 
 async function processTrack(t) {
@@ -1705,7 +1952,24 @@ async function processTrack(t) {
   await new Promise((r) => setTimeout(r, 0));
 
   const p = state.params;
-  const rendered = await renderChain(t.orig, p, t.cut);
+
+  // Clean first, rebuild second: the exciter draws on the same band
+  // where Suno's shimmer lives. The dry path is cleaned at the chosen strength,
+  // the exciter's feed at twice that (capped at 1.0). Both versions come from one analysis.
+  let dryBuf = t.orig, feedBuf = null;
+  if (p.deshimmer > 0) {
+    const o = t.orig, sr0 = o.sampleRate;
+    const L0 = o.getChannelData(0), R0 = o.numberOfChannels > 1 ? o.getChannelData(1) : L0;
+    const [dry, feed] = deshimmer(L0, R0, sr0, [p.deshimmer, Math.min(1, 2 * p.deshimmer)],
+                                  t.cut.fullRange ? null : t.cut.hz);
+    const mk = ([l, r]) => {
+      const bf = getDecodeCtx().createBuffer(2, o.length, sr0);
+      bf.copyToChannel(l, 0); bf.copyToChannel(r, 1); return bf;
+    };
+    dryBuf = mk(dry); feedBuf = mk(feed);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  const rendered = await renderChain(dryBuf, p, t.cut, feedBuf);
 
   const sr = rendered.sampleRate;
   const chans = [];
@@ -1718,17 +1982,17 @@ async function processTrack(t) {
     t.orig.sampleRate
   );
 
-  // Лимитер сам по себе снижает громкость, особенно на плотном материале,
-  // поэтому одного прохода мало: цель уточняется итеративно, пока промах
-  // не станет меньше десятой доли децибела. Тот же приём, что в Python-версии.
+  // The limiter itself lowers the loudness, especially on dense material,
+  // so one pass isn't enough: the target is refined iteratively until the miss
+  // is under a tenth of a decibel. The same approach as in the Python version.
   const dry = chans.map((ch) => Float32Array.from(ch));
   const lufsMid = measureLUFS(dry, sr);
   const ceiling = Math.pow(10, p.ceiling / 20);
 
   let totalDb = p.target - lufsMid;
   let after = lufsMid;
-  // Огибающая true peak линейна по усилению, поэтому считается один раз
-  // для сухого сигнала и просто масштабируется на каждом проходе.
+  // The true-peak envelope is linear in gain, so it's computed once
+  // for the dry signal and simply scaled on each pass.
   const dryEnv = truePeakEnvelope(dry);
   const scaledEnv = new Float32Array(dryEnv.length);
   const applyGain = (db) => {
@@ -1742,10 +2006,10 @@ async function processTrack(t) {
     return measureLUFS(chans, sr);
   };
 
-  // Подгонка к цели методом секущих. Простое «добавь столько, сколько не
-  // хватило» плохо сходится, когда лимитер съедает часть прибавки: каждый
-  // шаг недобирает. Секущая сама оценивает, сколько реальной громкости даёт
-  // один добавленный децибел на этом конкретном треке.
+  // Fitting to the target by the secant method. Simply "add however much was
+  // missing" converges badly when the limiter eats part of the gain: every
+  // step falls short. The secant works out for itself how much real loudness
+  // one added decibel buys on this particular track.
   after = applyGain(totalDb);
   let prevDb = null, prevAfter = null;
   for (let pass = 1; pass < 8 && Math.abs(p.target - after) > 0.1 && after > -70; pass++) {
@@ -1760,8 +2024,8 @@ async function processTrack(t) {
     after = applyGain(totalDb);
   }
 
-  // Финальная проверка: если плавная кривая гейна где-то всё же оставила
-  // пик над потолком — статический сдвиг вниз на разницу.
+  // The final check: if the smooth gain curve has still left a peak above
+  // the ceiling somewhere — a static shift down by the difference.
   let finalTp = truePeakDb(chans);
   if (finalTp > p.ceiling) {
     const trim = Math.pow(10, (p.ceiling - finalTp) / 20);
@@ -1815,7 +2079,7 @@ async function processAll() {
 }
 
 /* ============================================================
-   8. Отрисовка спектра
+   8. Drawing the spectrum
    ============================================================ */
 
 const canvas = $('spectrum');
@@ -1844,7 +2108,7 @@ function drawScope() {
   const dbTop = 6, dbBot = -84;
   const yOf = (db) => pad.t + ((dbTop - db) / (dbTop - dbBot)) * (h - pad.t - pad.b);
 
-  // Сетка
+  // Grid
   cctx.strokeStyle = '#232019';
   cctx.fillStyle = '#6E695E';
   cctx.lineWidth = 1;
@@ -1880,7 +2144,7 @@ function drawScope() {
     }
   };
 
-  // Оригинал — заливка
+  // The original — filled area
   path(t.specA, ref, t.orig.sampleRate);
   cctx.lineTo(xOf(fMax), h - pad.b);
   cctx.lineTo(xOf(fMin), h - pad.b);
@@ -1893,7 +2157,7 @@ function drawScope() {
   cctx.lineWidth = 1.4;
   cctx.stroke();
 
-  // Обработанный — линия
+  // The processed one — a line
   if (t.specB) {
     const refB = bandReference(t.specB, t.proc.sampleRate);
     path(t.specB, refB, t.proc.sampleRate);
@@ -1902,7 +2166,7 @@ function drawScope() {
     cctx.stroke();
   }
 
-  // Линия среза
+  // The cutoff line
   if (t.cut && !t.cut.fullRange) {
     const x = Math.round(xOf(t.cut.hz)) + 0.5;
     cctx.save();
@@ -2006,8 +2270,8 @@ function updateReadout() {
   $('rAir').className = 'cell-value' + (s && s.airGain > 3 ? ' up' : '');
   $('rIn').textContent = s ? fmtLufs(s.lufsIn) : '—';
   $('rOut').textContent = s ? fmtLufs(s.lufsOut) : '—';
-  // Если трек упёрся в предел громкости при честном потолке true peak —
-  // говорим об этом прямо, а не молча недобираем до цели.
+  // If a track has run into its loudness limit at an honest true-peak ceiling —
+  // say so plainly, rather than quietly falling short of the target.
   const capped = s && s.target !== undefined && s.lufsOut < s.target - 0.3;
   $('rOutLabel').textContent = capped ? 'Loudness after — max without distortion' : 'Loudness after';
   $('rOut').classList.toggle('capped', !!capped);
@@ -2032,9 +2296,10 @@ function download(t) {
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
 }
 
-/* ---------- слайдеры ---------- */
+/* ---------- sliders ---------- */
 
 const controls = [
+  { el: 'cDeshimmer', out: 'oDeshimmer', key: 'deshimmer', map: (v) => v / 100, fmt: (v) => (v === 0 ? 'off' : String(Math.round(v * 100))) },
   { el: 'cAir',    out: 'oAir',    key: 'air',    map: (v) => v / 100,        fmt: (v) => String(Math.round(v * 100)) },
   { el: 'cDrive',  out: 'oDrive',  key: 'drive',  map: (v) => v / 100,        fmt: (v) => String(Math.round(v * 100)) },
   { el: 'cShelf',  out: 'oShelf',  key: 'shelf',  map: (v) => v / 10,         fmt: (v) => fmtDb(v) },
@@ -2121,7 +2386,7 @@ $('clearBtn').addEventListener('click', () => {
 });
 
 /* ============================================================
-   10. Плеер с мгновенным A/B
+   10. A player with instant A/B
    ============================================================ */
 
 const player = { ctx: null, a: null, b: null, gA: null, gB: null, t0: 0, offset: 0, on: false, raf: 0 };
@@ -2188,7 +2453,7 @@ function startPlayback() {
 function stopSources() {
   for (const k of ['a', 'b']) {
     if (player[k]) {
-      try { player[k].onended = null; player[k].stop(); } catch (e) { /* уже остановлен */ }
+      try { player[k].onended = null; player[k].stop(); } catch (e) { /* already stopped */ }
       player[k] = null;
     }
   }
@@ -2265,7 +2530,7 @@ $('seek').addEventListener('keydown', (e) => {
 });
 
 /* ============================================================
-   11. Старт
+   11. Start
    ============================================================ */
 
 window.addEventListener('resize', () => drawScope());

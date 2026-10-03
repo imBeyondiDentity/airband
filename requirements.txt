@@ -1,0 +1,7 @@
+# Required
+numpy>=1.24
+scipy>=1.10
+
+# Optional
+# soundfile>=0.12   — reading files without ffmpeg
+# matplotlib>=3.7   — for the --report switch

@@ -1,4 +1,4 @@
-"""Анализ: спектр, точка среза, громкость по ITU-R BS.1770-4, тру-пик."""
+"""Analysis: spectrum, cutoff point, ITU-R BS.1770-4 loudness, true peak."""
 
 from __future__ import annotations
 
@@ -9,15 +9,15 @@ FFT_SIZE = 8192
 
 
 # --------------------------------------------------------------------------
-# спектр
+# spectrum
 # --------------------------------------------------------------------------
 
 def average_spectrum(x: np.ndarray, sr: int, n: int = FFT_SIZE,
                      max_frames: int = 240) -> tuple[np.ndarray, np.ndarray]:
-    """Усреднённая спектральная мощность по всему треку.
+    """Average spectral power across the whole track.
 
-    Тихие окна выбрасываются: паузы между частями не должны
-    занижать верх и сдвигать точку среза вниз.
+    Quiet windows are thrown away: the pauses between sections mustn't
+    drag the top end down and pull the cutoff point lower.
     """
     mono = x.mean(axis=1) if x.ndim > 1 else x
     if mono.size < n:
@@ -48,7 +48,7 @@ def average_spectrum(x: np.ndarray, sr: int, n: int = FFT_SIZE,
 
 
 def smooth_octave(power: np.ndarray, freqs: np.ndarray, frac: float = 1 / 12) -> np.ndarray:
-    """Сглаживание по доле октавы — иначе кривая читается как шум."""
+    """Smoothing by a fraction of an octave — otherwise the curve reads as noise."""
     binhz = freqs[1] - freqs[0]
     k = 2 ** (frac / 2)
     csum = np.concatenate([[0.0], np.cumsum(power)])
@@ -65,7 +65,7 @@ def to_db(power: np.ndarray) -> np.ndarray:
 
 
 def band_reference(db: np.ndarray, freqs: np.ndarray) -> float:
-    """Опорный уровень — 80-й перцентиль в полосе 1–5 кГц."""
+    """Reference level — the 80th percentile in the 1–5 kHz band."""
     sel = db[(freqs >= 1000) & (freqs <= 5000)]
     if sel.size == 0:
         return -60.0
@@ -74,8 +74,8 @@ def band_reference(db: np.ndarray, freqs: np.ndarray) -> float:
 
 def detect_cutoff(db: np.ndarray, freqs: np.ndarray, sr: int,
                   drop_db: float = 45.0) -> dict:
-    """Ищем обрыв: сверху вниз, первая частота, где три бина подряд
-    поднимаются над порогом."""
+    """Look for the cliff: from the top down, the first frequency where three bins
+    in a row rise above the threshold."""
     nyq = sr / 2
     ref = band_reference(db, freqs)
     thr = ref - drop_db
@@ -90,7 +90,7 @@ def detect_cutoff(db: np.ndarray, freqs: np.ndarray, sr: int,
 
     hz = float(np.clip(freqs[cut_i], 7000.0, nyq * 0.985))
 
-    # Крутизна обрыва: перепад за треть октавы над точкой среза.
+    # Cliff steepness: the drop across a third of an octave above the cutoff point.
     above = db[(freqs > hz) & (freqs < min(hz * 1.26, nyq * 0.99))]
     steep = float(ref - above.mean()) if above.size else 0.0
 
@@ -112,11 +112,11 @@ def band_energy_db(db: np.ndarray, freqs: np.ndarray, lo: float, hi: float) -> f
 def mud_excess_db(db: np.ndarray, freqs: np.ndarray,
                   mud_lo: float = 250.0, mud_hi: float = 400.0,
                   ref_lo: float = 600.0, ref_hi: float = 2500.0) -> float:
-    """Насколько полоса 250–400 Гц реально выпирает над серединой (600–2500 Гц).
+    """How far the 250–400 Hz band really sticks out above the mids (600–2500 Hz).
 
-    Положительное значение — там правда лишнее; ноль или отрицательное —
-    резать нечего, бить туда фиксированным −2.5 дБ вслепую значит просто
-    портить бас там, где мути не было.
+    A positive value means there's genuinely too much there; zero or negative —
+    there's nothing to cut, and hitting it with a blind fixed −2.5 dB just
+    spoils the bass where there was no mud.
     """
     mud = band_energy_db(db, freqs, mud_lo, mud_hi)
     ref = band_energy_db(db, freqs, ref_lo, ref_hi)
@@ -124,11 +124,11 @@ def mud_excess_db(db: np.ndarray, freqs: np.ndarray,
 
 
 def stereo_width_ratio(x: np.ndarray) -> float:
-    """Сколько в треке уже есть стерео-информации: RMS(side) / RMS(mid).
+    """How much stereo information a track already has: RMS(side) / RMS(mid).
 
-    0 — чистое моно, ~1 и выше — уже широкий материал. Нужно, чтобы не
-    досыпать ширину туда, где она и так на пределе (риск фазовых проблем
-    в моно-совместимости), и не жалеть её там, где сигнал почти моно.
+    0 is pure mono, ~1 and above is already wide material. Needed so as not to
+    add width where it's already at its limit (a risk of phase problems
+    in mono compatibility), and not to hold back where the signal is nearly mono.
     """
     if x.ndim < 2 or x.shape[1] < 2:
         return 0.0
@@ -140,7 +140,7 @@ def stereo_width_ratio(x: np.ndarray) -> float:
 
 
 # --------------------------------------------------------------------------
-# громкость
+# loudness
 # --------------------------------------------------------------------------
 
 def _k_filters(sr: int):
@@ -163,7 +163,7 @@ def _k_filters(sr: int):
 
 
 def loudness_lufs(x: np.ndarray, sr: int) -> float:
-    """Интегральная громкость по ITU-R BS.1770-4 с двойным гейтингом."""
+    """Integrated loudness per ITU-R BS.1770-4 with double gating."""
     x = np.atleast_2d(x.T).T if x.ndim > 1 else x[:, None]
     (b1, a1), (b2, a2) = _k_filters(sr)
 
@@ -196,8 +196,8 @@ def loudness_lufs(x: np.ndarray, sr: int) -> float:
 
 
 def true_peak_db(x: np.ndarray, sr: int, oversample: int = 4) -> float:
-    """Тру-пик с передискретизацией. Кусок подбирается под кратность,
-    чтобы память не росла: 30 секунд при 4x, 15 при 8x и так далее."""
+    """True peak with oversampling. The chunk size is chosen to suit the factor,
+    so memory doesn't grow: 30 seconds at 4x, 15 at 8x, and so on."""
     x = np.atleast_2d(x.T).T if x.ndim > 1 else x[:, None]
     peak = 0.0
     step = max(sr, sr * 120 // oversample)

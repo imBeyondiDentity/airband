@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Самопроверка DSP. Запускать после любых правок:
+"""DSP self-test. Run after any change:
 
     python selftest.py
 
-Синтезирует сигнал, режет его как кодек, восстанавливает
-и сравнивает результат с тем, что было до обрезки.
+Synthesises a signal, cuts it the way a codec would, restores it
+and compares the result with what it was before the cut.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ fails: list[str] = []
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
-    mark = "ок  " if ok else "СБОЙ"
+    mark = "ok  " if ok else "FAIL"
     print(f"  [{mark}] {name}{'  ' + detail if detail else ''}")
     if not ok:
         fails.append(name)
@@ -33,29 +33,29 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 # --------------------------------------------------------------------------
 
 def test_loudness() -> None:
-    print("Измеритель громкости (ITU-R BS.1770-4)")
+    print("Loudness meter (ITU-R BS.1770-4)")
     n = SR * 5
     t = np.arange(n) / SR
 
     mono = np.sin(2 * np.pi * 997 * t)[:, None]
     v = loudness_lufs(mono, SR)
-    check("калибровка 997 Гц, 0 dBFS, один канал", abs(v + 3.01) < 0.15,
-          f"{v:+.2f} LUFS при эталоне -3.01")
+    check("calibration: 997 Hz, 0 dBFS, one channel", abs(v + 3.01) < 0.15,
+          f"{v:+.2f} LUFS against a reference of -3.01")
 
     stereo = np.repeat(np.sin(2 * np.pi * 997 * t)[:, None], 2, axis=1)
     v2 = loudness_lufs(stereo, SR)
-    check("два канала дают ровно +3.01 дБ", abs((v2 - v) - 3.01) < 0.1,
-          f"разница {v2 - v:+.2f} дБ")
+    check("two channels give exactly +3.01 dB", abs((v2 - v) - 3.01) < 0.1,
+          f"difference {v2 - v:+.2f} dB")
 
     v3 = loudness_lufs(stereo * 0.1, SR)
-    check("линейность по усилению", abs((v3 - v2) + 20.0) < 0.1,
-          f"-20 дБ дали {v3 - v2:+.2f}")
+    check("linearity with gain", abs((v3 - v2) + 20.0) < 0.1,
+          f"-20 dB gave {v3 - v2:+.2f}")
 
-    check("тишина уходит в пол", loudness_lufs(np.zeros((n, 2)), SR) <= -70)
+    check("silence falls to the floor", loudness_lufs(np.zeros((n, 2)), SR) <= -70)
 
 
 def test_limiter() -> None:
-    print("\nЛимитер")
+    print("\nLimiter")
     n = SR * 3
     rng = np.random.default_rng(1)
     x = rng.normal(0, 0.15, (n, 2))
@@ -64,16 +64,16 @@ def test_limiter() -> None:
 
     y = limit(x, ceiling_db=-1.0, sr=SR)
     tp = true_peak_db(y, SR)
-    check("тру-пик под потолком", tp <= -0.99, f"{tp:+.3f} дБ при потолке -1.00")
+    check("true peak under the ceiling", tp <= -0.99, f"{tp:+.3f} dB against a ceiling of -1.00")
 
     ceiling = 10 ** (-1.0 / 20)
     over = np.abs(y) > ceiling + 1e-9
-    check("жёсткий clip() почти не нужен", over.sum() < 5,
-          f"сработал на {over.sum()} из {y.size} сэмплов")
+    check("the hard clip() is hardly needed", over.sum() < 5,
+          f"fired on {over.sum()} of {y.size} samples")
 
-    # Hold-стадия: после одиночного транзиента гейн должен держаться
-    # у дна ~40 мс (сверено с подходом Hyrax из Matchering), а не
-    # отпускать сразу же.
+    # Hold stage: after a single transient the gain should stay at the bottom
+    # for ~40 ms (checked against Hyrax's approach in Matchering), rather
+    # than releasing straight away.
     peak = np.zeros(n)
     peak[SR] = 2.0
     inner = ceiling * 10 ** (-0.4 / 20)
@@ -86,16 +86,16 @@ def test_limiter() -> None:
         if v > floor * 1.05:
             held = i
             break
-    check("гейн держится после пика, не отпускает сразу",
-          30 < held / SR * 1000 < 55, f"держится {held / SR * 1000:.1f} мс, ожидаю ~40")
+    check("the gain holds after the peak, doesn't release at once",
+          30 < held / SR * 1000 < 55, f"holds for {held / SR * 1000:.1f} ms, expecting ~40")
 
     quiet = np.abs(x).max(axis=1) < 0.5
     ratio = np.abs(y[quiet]).mean() / np.abs(x[quiet]).mean()
-    check("тихие места почти не тронуты", ratio > 0.93, f"осталось {ratio * 100:.1f}%")
+    check("quiet passages barely touched", ratio > 0.93, f"{ratio * 100:.1f}% left")
 
 
 def test_normalize() -> None:
-    print("\nНормализация")
+    print("\nNormalisation")
     n = SR * 6
     t = np.arange(n) / SR
     rng = np.random.default_rng(2)
@@ -104,10 +104,10 @@ def test_normalize() -> None:
 
     for target in (-14.0, -11.0, -8.0):
         y, st = normalize(x, SR, target)
-        check(f"попадание в {target:+.0f} LUFS", abs(st["lufs_after"] - target) < 0.15,
-              f"получилось {st['lufs_after']:+.2f} за {st['passes']} прохода(ов)")
-        check(f"потолок при цели {target:+.0f}", st["true_peak"] <= -0.99,
-              f"{st['true_peak']:+.3f} дБ")
+        check(f"hitting {target:+.0f} LUFS", abs(st["lufs_after"] - target) < 0.15,
+              f"got {st['lufs_after']:+.2f} in {st['passes']} pass(es)")
+        check(f"ceiling at a target of {target:+.0f}", st["true_peak"] <= -0.99,
+              f"{st['true_peak']:+.3f} dB")
 
 
 def _material(secs: float = 8.0) -> np.ndarray:
@@ -131,7 +131,7 @@ def _brickwall(x: np.ndarray, hz: float) -> np.ndarray:
 
 
 def test_restoration() -> None:
-    print("\nВосстановление верха")
+    print("\nTop-end restoration")
     truth = _material()
     cut_hz = 16000.0
     cut_material = _brickwall(truth, cut_hz)
@@ -140,8 +140,8 @@ def test_restoration() -> None:
     db = to_db(smooth_octave(p, f, 1 / 12))
     found = detect_cutoff(db, f, SR)
     err = abs(found["hz"] - cut_hz) / cut_hz
-    check("детектор находит срез", err < 0.06,
-          f"нашёл {found['hz'] / 1000:.2f} кГц, срезано на {cut_hz / 1000:.1f}")
+    check("the detector finds the cutoff", err < 0.06,
+          f"found {found['hz'] / 1000:.2f} kHz, cut at {cut_hz / 1000:.1f}")
 
     y = tone(cut_material, SR, 0.0, 0.0)
     y = y + harmonic_air(y, SR, found["hz"], amount=1.0, drive=0.65)
@@ -156,7 +156,7 @@ def test_restoration() -> None:
     f2, s2 = profile(y)
 
     worst = 0.0
-    print("    частота   правда   срезано  восстановлено")
+    print(f"    {'Hz':>7} {'truth':>8} {'cut':>9} {'restored':>13}")
     for hz in (17000, 18000, 19000, 20000, 21000):
         i0 = int(np.argmin(abs(f0 - hz)))
         i1 = int(np.argmin(abs(f1 - hz)))
@@ -164,52 +164,52 @@ def test_restoration() -> None:
         worst = max(worst, abs(s2[i2] - s0[i0]))
         print(f"    {hz:>7} {s0[i0]:+8.1f} {s1[i1]:+9.1f} {s2[i2]:+13.1f}")
 
-    check("восстановленный верх близок к оригиналу", worst < 6.0,
-          f"худшее расхождение {worst:.1f} дБ")
+    check("the restored top end is close to the original", worst < 6.0,
+          f"worst difference {worst:.1f} dB")
 
     i_mid = (f2 > 200) & (f2 < 4000)
     j_mid = (f0 > 200) & (f0 < 4000)
     drift = abs(s2[i_mid].mean() - s0[j_mid].mean())
-    check("середина не поехала", drift < 1.0, f"сдвиг {drift:.2f} дБ")
+    check("the mids haven't shifted", drift < 1.0, f"shift {drift:.2f} dB")
 
 
 def test_auto_params() -> None:
-    print("\nАвто-параметры (Master Assistant)")
+    print("\nAuto parameters (Master Assistant)")
     from airband import analyse, auto_params
 
     truth = _material()
 
-    # Полный диапазон — досинтез должен быть выключен целиком.
+    # Full range — resynthesis should be switched off entirely.
     cut_full = analyse(truth, SR)
     p_full = auto_params(truth, SR, cut_full)
-    check("полный диапазон -> без досинтеза", p_full.air == 0.0 and p_full.drive == 0.0,
+    check("full range -> no resynthesis", p_full.air == 0.0 and p_full.drive == 0.0,
           f"air={p_full.air:.2f} drive={p_full.drive:.2f}")
 
-    # Жёсткий обрыв (16 кГц, кирпичная стена) -> заметно более
-    # агрессивные значения, чем мягкий скат.
+    # A hard cliff (16 kHz, brick wall) -> noticeably more aggressive
+    # values than a soft rolloff.
     hard = _brickwall(truth, 16000.0)
     cut_hard = analyse(hard, SR)
     p_hard = auto_params(hard, SR, cut_hard)
-    check("жёсткий обрыв -> досинтез включён", p_hard.air > 0.5,
+    check("hard cliff -> resynthesis on", p_hard.air > 0.5,
           f"air={p_hard.air:.2f}")
 
-    # Пропорция: чем мягче скат, тем меньше агрессия. Сравниваю жёсткий
-    # обрыв с более мягким (тот же метод _brickwall, но ниже порядок —
-    # эмулирую через второй, менее жёсткий фильтр вручную).
+    # Proportion: the softer the rolloff, the less aggression. I compare a hard
+    # cliff with a softer one (the same _brickwall method but a lower order —
+    # emulated by hand through a second, less severe filter).
     from scipy.signal import butter, sosfilt
     h = butter(2, 16000, "lowpass", fs=SR, output="sos")
     soft = np.stack([sosfilt(h, truth[:, c]) for c in range(truth.shape[1])], axis=1)
     cut_soft = analyse(soft, SR)
     p_soft = auto_params(soft, SR, cut_soft)
-    check("мягкий скат мягче жёсткого обрыва (или не детектится вовсе)",
+    check("a soft rolloff is gentler than a hard cliff (or isn't detected at all)",
           p_soft.air <= p_hard.air,
-          f"мягкий air={p_soft.air:.2f}, жёсткий air={p_hard.air:.2f}")
+          f"soft air={p_soft.air:.2f}, hard air={p_hard.air:.2f}")
 
-    # Мутный тест: берём сам материал _material() как есть — в нём есть
-    # тон на 246.9 Гц, который объективно даёт подъём в полосе 250–400 Гц
-    # (это не баг измерения, а реальное свойство синтетики). Проверяю
-    # обратное: широкополосный шум без тонов в этой полосе не должен
-    # давать ложного срабатывания.
+    # The mud test: take the _material() material as it is — it contains
+    # a tone at 246.9 Hz, which objectively gives a boost in the 250–400 Hz band
+    # (that's not a bug in the measurement but a genuine property of the
+    # synthetic signal). I check the opposite: broadband noise with no tones in
+    # that band mustn't give a false positive.
     rng = np.random.default_rng(3)
     flat_noise = rng.normal(0, 1, SR * 4)
     flat_noise = np.stack([flat_noise, flat_noise], axis=1) * 0.2
@@ -217,21 +217,21 @@ def test_auto_params() -> None:
     db_flat = to_db(smooth_octave(p_flat, f_flat, 1 / 12))
     from analysis import mud_excess_db
     excess_flat = mud_excess_db(db_flat, f_flat)
-    check("широкополосный шум без тона -> избыток мути около нуля",
-          abs(excess_flat) < 3.0, f"избыток {excess_flat:+.1f} дБ")
+    check("broadband noise with no tone -> mud excess near zero",
+          abs(excess_flat) < 3.0, f"excess {excess_flat:+.1f} dB")
 
-    # А вот material() с её тоном на 246.9 Гц ДОЛЖНА показать реальный
-    # избыток — это подтверждает, что измерение вообще что-то различает,
-    # а не всегда возвращает одно и то же.
+    # And _material() with its tone at 246.9 Hz MUST show a real
+    # excess — that confirms the measurement distinguishes anything at all,
+    # rather than always returning the same thing.
     excess_material = mud_excess_db(cut_hard["_db"], cut_hard["_freqs"])
-    check("тон на 246.9 Гц в material() даёт реальный избыток",
-          excess_material > 5.0, f"избыток {excess_material:+.1f} дБ")
+    check("the tone at 246.9 Hz in material() gives a real excess",
+          excess_material > 5.0, f"excess {excess_material:+.1f} dB")
 
 
 def _shimmer_material(secs=8.0):
-    """Чистый материал с полосой 4.5–14 кГц (хэты, «воздух» тарелок,
-    мелодия с обертонами) и отдельно — синтетический шиммер: узкие
-    мерцающие тона 5–13 кГц, вспышки 20–60 мс, в основном в боковом канале."""
+    """Clean material with a 4.5–14 kHz band (hi-hats, the "air" of cymbals,
+    a melody with overtones) and, separately, synthetic shimmer: narrow
+    flickering tones at 5–13 kHz, bursts of 20–60 ms, mostly in the side channel."""
     from scipy.signal import butter, sosfilt
     r = np.random.default_rng(5); n = int(SR * secs); t = np.arange(n) / SR
     x = np.zeros(n)
@@ -265,13 +265,13 @@ def _shimmer_material(secs=8.0):
 
 
 def test_deshimmer() -> None:
-    print("\nДе-шиммер")
+    print("\nDe-shimmer")
     from deshimmer import _stft, _istft, deshimmer, shimmer_amount
     rng = np.random.default_rng(1)
     z = rng.normal(0, 0.3, SR * 2)
     Z, pl = _stft(z)
     err = np.max(np.abs(_istft(Z, pl, len(z)) - z))
-    check("STFT без обработки восстанавливает сигнал", err < 1e-9, f"ошибка {err:.1e}")
+    check("STFT without processing restores the signal", err < 1e-9, f"error {err:.1e}")
 
     clean, art = _shimmer_material()
     x = clean + art
@@ -283,22 +283,22 @@ def test_deshimmer() -> None:
 
     y = deshimmer(x, SR, strength=1.0)
     red = band(x - clean) - band(y - clean)
-    check("шиммер подавляется", red > 5.0, f"ушло {red:.1f} дБ")
+    check("shimmer is suppressed", red > 5.0, f"removed {red:.1f} dB")
 
     yc = deshimmer(clean, SR, strength=1.0)
     dmg = band(yc - clean) - band(clean)
-    check("чистая музыка почти не тронута", dmg < -25.0, f"ущерб {dmg:+.1f} дБ к музыке")
+    check("clean music is barely touched", dmg < -25.0, f"damage {dmg:+.1f} dB relative to the music")
     S = np.fft.rfft(yc - clean, axis=0); f = np.fft.rfftfreq(clean.shape[0], 1 / SR)
     lowmax = np.max(np.abs(S[f < 3500])) / np.max(np.abs(np.fft.rfft(clean, axis=0)[f < 3500]))
-    check("низ ниже 3.5 кГц не тронут", lowmax < 1e-4, f"отн. изменение {lowmax:.1e}")
+    check("the low end below 3.5 kHz is untouched", lowmax < 1e-4, f"relative change {lowmax:.1e}")
 
     a_clean, a_dirty = shimmer_amount(clean, SR), shimmer_amount(x, SR)
-    check("оценка шиммера различает чистый и мерцающий трек", a_dirty > a_clean + 1.0,
-          f"чистый {a_clean:.2f} дБ, с шиммером {a_dirty:.2f} дБ")
+    check("the shimmer estimate tells a clean track from a flickering one", a_dirty > a_clean + 1.0,
+          f"clean {a_clean:.2f} dB, with shimmer {a_dirty:.2f} dB")
 
 
 def main() -> int:
-    print(f"Airband — самопроверка, {SR} Гц\n")
+    print(f"Airband self-test, {SR} Hz\n")
     test_loudness()
     test_limiter()
     test_normalize()
@@ -308,11 +308,11 @@ def main() -> int:
 
     print()
     if fails:
-        print(f"Провалено: {len(fails)}")
+        print(f"Failed: {len(fails)}")
         for f in fails:
             print(f"  - {f}")
         return 1
-    print("Всё прошло.")
+    print("All passed.")
     return 0
 
 

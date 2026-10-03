@@ -1,9 +1,9 @@
-"""Восстановление верха и тональная коррекция.
+"""Top-end restoration and tonal correction.
 
-Главное отличие от браузерной версии — слежение за огибающей.
-Новый верх не просто подмешивается ровным слоем: его уровень
-в каждый момент выводится из наклона спектра под точкой среза,
-поэтому воздух дышит вместе с музыкой, а не шипит поверх неё.
+The key idea here is envelope following. The new top end isn't simply
+mixed in as a flat layer: at every moment its level is derived from the
+spectral slope below the cutoff point, so the air breathes with the music
+instead of hissing on top of it.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from analysis import average_spectrum, smooth_octave, to_db
 
 
 # --------------------------------------------------------------------------
-# фильтры
+# filters
 # --------------------------------------------------------------------------
 
 def _fir(taps: int, cuts, sr: int, pass_zero):
@@ -23,7 +23,7 @@ def _fir(taps: int, cuts, sr: int, pass_zero):
 
 
 def _apply_fir(x: np.ndarray, h: np.ndarray) -> np.ndarray:
-    """Линейная фаза: свёртка с обрезкой по центру, задержка компенсируется."""
+    """Linear phase: convolution trimmed about the centre, the delay is compensated."""
     out = np.empty_like(x)
     for c in range(x.shape[1]):
         out[:, c] = fftconvolve(x[:, c], h, mode="same")
@@ -63,23 +63,23 @@ def _biquad(x: np.ndarray, sos: np.ndarray) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------
-# досинтез верха
+# top-end resynthesis
 # --------------------------------------------------------------------------
 
 def _saturate(u: np.ndarray, drive: float) -> np.ndarray:
-    """Мягкое несимметричное насыщение: нечётные гармоники дают яркость,
-    чётные — теплоту. Без асимметрии верх звучит стеклянно."""
+    """Gentle asymmetric saturation: odd harmonics give brightness,
+    even ones give warmth. Without the asymmetry the top end sounds glassy."""
     v = np.tanh(u * drive)
     return v * (1.0 + 0.25 * v)
 
 
 def _envelope_gain(x: np.ndarray, synth: np.ndarray, sr: int, cutoff: float,
                    n: int = 2048, hop: int = 512) -> np.ndarray:
-    """Во сколько раз усилить синтезированную полосу в каждый момент.
+    """By what factor to boost the synthesised band at each moment.
 
-    Наклон спектра меряется по двум полосам под срезом и
-    экстраполируется выше него — так получается уровень,
-    который был бы у материала, если бы его не обрезали.
+    The spectral slope is measured across two bands below the cutoff and
+    extrapolated above it — which gives the level the material would have
+    had if it hadn't been cut off.
     """
     mono_x = x.mean(axis=1)
     mono_s = synth.mean(axis=1)
@@ -92,9 +92,10 @@ def _envelope_gain(x: np.ndarray, synth: np.ndarray, sr: int, cutoff: float,
     if not (b1.any() and b2.any() and bf.any()):
         return np.ones(mono_x.size)
 
-    # Кадры считаются пачками и сразу сворачиваются в средние по полосам —
-    # полная спектрограмма трека в памяти не нужна. Окно Ханна периодическое,
-    # как у scipy.signal.stft; масштаб окна сокращается в разности уровней.
+    # Frames are computed in batches and folded straight into per-band averages —
+    # the track's full spectrogram never needs to be held in memory. The Hann
+    # window is periodic, like scipy.signal.stft's; the window's scale cancels
+    # in the level difference.
     win = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(n) / n)
     nf = 1 + (mono_x.size - n) // hop if mono_x.size >= n else 0
     if nf <= 0:
@@ -119,12 +120,12 @@ def _envelope_gain(x: np.ndarray, synth: np.ndarray, sr: int, cutoff: float,
 
     gain_db = np.clip(target - ls, -30.0, 18.0)
 
-    # Кадры, где в опорной полосе почти тишина, не должны
-    # раздувать шум: гасим их.
+    # Frames where the reference band is nearly silent mustn't
+    # inflate the noise: they're muted.
     quiet = l2 < (np.percentile(l2, 95) - 45)
     gain_db[quiet] = -60.0
 
-    # Сглаживание по времени, окно около 25 мс.
+    # Smoothing over time, a window of about 25 ms.
     k = max(3, int(round(0.025 * sr / hop)) | 1)
     ker = np.hanning(k)
     ker /= ker.sum()
@@ -139,8 +140,8 @@ def _envelope_gain(x: np.ndarray, synth: np.ndarray, sr: int, cutoff: float,
 def harmonic_air(x: np.ndarray, sr: int, cutoff: float, amount: float,
                  drive: float, follow: bool = True,
                  oversample: int = 4, taps: int = 1025) -> np.ndarray:
-    """Синтезировать содержимое выше точки среза. Возвращает только новый
-    материал, без исходного сигнала."""
+    """Synthesise the content above the cutoff point. Returns only the new
+    material, without the original signal."""
     nyq = sr / 2
     if amount <= 0 or cutoff >= nyq * 0.93:
         return np.zeros_like(x)
@@ -152,11 +153,11 @@ def harmonic_air(x: np.ndarray, sr: int, cutoff: float, amount: float,
 
     band = _apply_fir(x, _fir(taps, [lo, hi], sr, pass_zero=False))
 
-    # Насыщение на 4-кратной частоте — кусками с запасом: на всём треке
-    # разом передискретизованный массив и копии внутри кривой занимали
-    # гигабайты (четырёхминутный трек падал по памяти). Фильтру
-    # передискретизации нужно лишь несколько десятков отсчётов контекста,
-    # так что запаса в 4096 хватает с лихвой — результат тот же.
+    # Saturation at 4x the sample rate — in chunks with a margin: on the whole
+    # track at once, the oversampled array and the copies inside the curve took
+    # up gigabytes (a four-minute track ran out of memory). The resampling filter
+    # needs only a few dozen samples of context, so a 4096 margin is more than
+    # enough — the result is the same.
     n = x.shape[0]
     chunk, margin = sr * 10, 4096
     synth = np.empty_like(band)
@@ -166,8 +167,8 @@ def harmonic_air(x: np.ndarray, sr: int, cutoff: float, amount: float,
         up = resample_poly(band[s0:s1], oversample, 1, axis=0)
         dn = resample_poly(_saturate(up, 1.0 + drive * 14.0), 1, oversample, axis=0)
         synth[a:b] = dn[a - s0:b - s0]
-    # постоянная составляющая: среднее после понижения частоты равно
-    # среднему до него — вычитаем его здесь, как раньше до понижения
+    # the DC component: the mean after downsampling equals the mean before it,
+    # so it's subtracted here, where it used to be subtracted before downsampling
     synth -= synth.mean(axis=0, keepdims=True)
 
     top = min(cutoff * 0.99, nyq * 0.9)
@@ -185,7 +186,7 @@ def harmonic_air(x: np.ndarray, sr: int, cutoff: float, amount: float,
 
 
 # --------------------------------------------------------------------------
-# тональная коррекция и стерео
+# tonal correction and stereo
 # --------------------------------------------------------------------------
 
 def tone(x: np.ndarray, sr: int, mud_db: float, shelf_db: float,
@@ -200,8 +201,8 @@ def tone(x: np.ndarray, sr: int, mud_db: float, shelf_db: float,
 
 def widen(x: np.ndarray, sr: int, amount: float, split_hz: float = 2500.0,
           taps: int = 513) -> np.ndarray:
-    """Расширение только выше split_hz. Низ остаётся моно —
-    иначе на клубной системе бас разъезжается."""
+    """Widening only above split_hz. The low end stays mono —
+    otherwise the bass drifts apart on a club system."""
     if amount <= 0 or x.shape[1] < 2:
         return x
     mid = (x[:, 0] + x[:, 1]) * 0.5
@@ -214,11 +215,12 @@ def widen(x: np.ndarray, sr: int, amount: float, split_hz: float = 2500.0,
 def match_reference(x: np.ndarray, sr: int, ref: np.ndarray,
                     strength: float = 1.0, max_db: float = 6.0,
                     taps: int = 2049) -> np.ndarray:
-    """Подогнать тональный баланс под эталонный трек.
+    """Match the tonal balance to a reference track.
 
-    Считается сглаженное отношение спектров, из него вычитается
-    средний уровень в 200–2000 Гц — правится форма, а не громкость.
-    Коррекция ограничена и применяется фильтром с линейной фазой.
+    The ratio of the smoothed spectra is computed, and the average level
+    across 200–2000 Hz is subtracted from it — so the shape is corrected,
+    not the loudness. The correction is limited and applied with a
+    linear-phase filter.
     """
     fx, px = average_spectrum(x, sr)
     fr, pr = average_spectrum(ref, sr)
@@ -236,7 +238,7 @@ def match_reference(x: np.ndarray, sr: int, ref: np.ndarray,
     gain = 10 ** (corr / 20)
     gain[-1] = gain[-2]
 
-    # Прореживаем сетку — firwin2 не любит тысячи точек.
+    # Thin out the grid — firwin2 doesn't like thousands of points.
     keep = np.unique(np.linspace(0, freq.size - 1, 512).astype(int))
     h = firwin2(taps | 1, freq[keep], gain[keep], window="hann")
     return _apply_fir(x, h)

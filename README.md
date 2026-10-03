@@ -1,5 +1,7 @@
 # Airband for the command line
 
+[Русская версия](README_ru.md)
+
 The local version. It does the same job as the browser one, more precisely, and covers what the browser version doesn't: matching to a reference track, album-wide normalisation, batch processing of whole folders, and cleaning up Suno's shimmer.
 
 ## Installation
