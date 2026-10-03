@@ -118,9 +118,10 @@ resolves once all three sit together on real hosting (a limitation of
 how the page is being previewed, not of the files themselves).
 
 ### README in both languages
-`README.md` (Russian) and `README.en.md` (British English, `colour`/
-`optimise` conventions) — kept in step with every interface change,
-rather than written once and left to drift.
+`README.md` (British English, `colour`/`optimise` conventions) and
+`README_ru.md` (Russian) — kept in step with every interface change,
+rather than written once and left to drift. See "Documentation and code
+in British English" below for how the naming works.
 
 ---
 
@@ -278,6 +279,166 @@ by letting peaks through — loudness is no longer bought with clipping.
 
 ---
 
+## The browser has caught up with Python on top-end restoration
+
+The test is the same as Python's self-test: a signal is cut with a brick
+wall at 16 kHz, restored, and compared with what it was before the cut,
+across 17–21 kHz. Python's bar is a worst-case error of 2.2 dB.
+
+| Step | Worst-case error | Shape of the error |
+|---|---|---|
+| Original browser version | 7.4 dB | steep tilt: +7 at the cutoff, +2 at the top |
+| + envelope following | 3.7 dB | tilted the other way |
+| + linear-phase FIR on the output | 3.3 dB | tilt remained |
+| + Python's saturation curve | **2.6 dB** | flat across all frequencies |
+
+### Envelope following
+Ported from Python one-for-one (checked on identical data — 0.000 dB
+difference). The new top end is now synthesised in a separate pass, then
+its level is set frame by frame from the spectral slope below the cutoff.
+The "how much top end to rebuild" control now means what it does in
+Python: 100 is the natural continuation of the spectrum.
+
+### An FIR filter on the exciter's output
+Gentle biquads replaced by a linear-phase FIR — the same filter as in
+Python (coefficients match to 4e-16). Convolution via FFT.
+
+### The cause of the tilt — the saturation curve
+The browser was running a different formula from Python: tanh(2.5x +
+0.35x²), several times harsher. The hypothesis was tested separately: the
+browser curve reproduced in Python gave the same tilt, and Python's curve
+inside the browser-style chain gave a flat 2.2 dB. Python's curve is now
+used.
+
+### What's left
+0.4 dB short of Python at the very top (−2.6 at 21 kHz) — most likely
+WaveShaper's built-in oversampling, which every browser implements its
+own way. A four-minute track takes about 23 seconds and the interface
+freezes meanwhile — next in line for moving into a Web Worker.
+
+### A side effect — loudness lands closer to target
+The new top end now sits at a more natural level with fewer sharp peaks,
+leaving the limiter more room: at a −11 LUFS target it's now −11.1 to
+−11.8 rather than −11.9 to −12.8.
+
+---
+
+## De-shimmer: clean first, rebuild second
+
+Suno leaves narrow, flickering artefacts — "shimmer" — in roughly the
+5–14 kHz range. Airband's exciter draws on exactly that range and,
+without a clean-up, built new harmonics out of the artefacts and pushed
+them upwards. The numbers confirm it: without cleaning, shimmer-derived
+debris in the air band sat only 5–6 dB below the music itself.
+
+### Telling artefacts from music
+An STFT; each frame gets a baseline taken as the median across
+neighbouring frequencies; any outlier above the threshold is brought
+down to the floor. Only what **flickers** is suppressed: a shimmer bin
+jumps 10–20 dB from frame to frame, while an instrument's note decays
+smoothly. Nothing below 4.5 kHz is touched, the centre of the mix is
+cleaned more gently than the sides, and transients and broadband events
+are left alone. The exciter's feed is cleaned twice as hard as the dry
+path (capped at 1.0) — the exciter only needs the band's structure.
+
+The flicker criterion took three attempts: a spectral-flatness gate
+didn't work (the birdies themselves make the band look "tonal"), and
+neither did a duration check (the analysis window glues fast bursts
+together into a "note").
+
+### Figures
+Synthetic test: shimmer added to clean material with a melody up to
+13 kHz.
+- in the shimmer band: debris from −0.5 to −6.6 dB relative to the music;
+- in the air band after the exciter: from −5.3 to −8.8 dB (browser),
+  from −6.2 to −9.8 dB (Python);
+- for a track with no shimmer: the air band changes by 0.03 dB, damage
+  to the music is −30 dB.
+What remains comes from nonlinear mixing of music and artefacts inside
+the saturation stage, which cleaning the input can't remove.
+
+### Browser and Python — the same thing
+The browser port was checked against Python on identical data: a
+difference of 1.5e-08 (float32 rounding), and the shimmer-amount
+estimate matches to four decimal places. Strength only enters the
+algorithm as a multiplier, so the gentle and the stronger versions come
+out of a single analysis. A new "Suno shimmer cleanup" slider; presets
+use 0.6 / 0.5 / 0.5 / off; Auto sets the strength from the measured
+amount of shimmer (from 0.3 for a clean track up to 0.8).
+
+### Licence
+An original implementation; no code from other projects was used. The
+ideas were checked against the public descriptions of deshimmer and
+Shimmer. deshimmer's README states MIT, but there's no LICENSE file in
+the repository — so no code was taken from it at all.
+
+### Found and fixed along the way
+- Python ran out of memory on a four-minute track: the de-shimmer's
+  median, the 4× saturation and the envelope's spectrogram all held the
+  whole track in huge arrays. All three now work in chunks; the result
+  was checked against the old one (identical to float precision, the
+  only difference being the first and last 40 ms of the track). Now:
+  four minutes in about a minute and a half, peak memory around 2 GB.
+  The previous speed estimate in the README was extrapolated from short
+  tracks — it's now measured on a real long one.
+- The browser median was rewritten as a sliding median over a sorted
+  window, and the loops reordered for sequential memory access.
+
+### The cost in speed
+A four-minute track in the browser now takes about 38 seconds rather
+than 23, and the interface freezes meanwhile — the next step is moving
+the processing into a Web Worker.
+
+---
+
+## Documentation and code in British English
+
+A standing convention, now applied across the whole of Airband: README and
+CHANGELOG are always written in British English under the plain names
+(`README.md`, `CHANGELOG.md`), and the Russian versions carry a `_ru`
+suffix (`README_ru.md`, `CHANGELOG_ru.md`). Each file links to the other
+language at the top. Previously it was the other way round: the Russian
+file had the plain name, and the English one carried `.en`.
+
+### What was renamed
+`README.en.md` → `README.md`, `README.md` → `README_ru.md`, the same for
+`CHANGELOG`, and the same pair inside `python/`. After uploading to GitHub
+the old `README.en.md` and `CHANGELOG.en.md` need deleting, or duplicates
+are left behind.
+
+`ABOUT.md` (British English) and `ABOUT_ru.md` (Russian) follow the same
+scheme. The old `ABOUT.md` turned out to be a snapshot of the very first
+README and had fallen behind (no Auto preset, no shimmer cleanup, no licence,
+and a claim that the browser has no envelope following), so both versions
+were rebuilt from the current README rather than translated as they were.
+
+### The Python version is now in English throughout
+Comments, docstrings, console messages, `--help`, the labels on the PNG
+report and the self-test output — everything that was in Russian across
+nine files (about 330 lines) was rewritten in British English. This was a
+rewrite, not a word-for-word translation: many of the comments explain
+*why* something is done a certain way, and that had to survive. The
+consequence for anyone using the command line: the console now speaks
+English too.
+
+### The code in `en.html` — likewise
+The visible interface was already English; what remained in Russian were
+the code comments (150 lines). They're now English as well. While at it, a
+comment above the limiter that still described the old, lookahead-only
+version was rewritten to say what the code really does: a lookahead, a hold
+stage and a true-peak envelope.
+
+### Proof that the sound didn't change
+A translation has no business touching the processing, so it was checked
+rather than assumed. Output arrays from before and after were compared bit
+for bit: Python — 12 of 12 results identical (4 files × 3 modes), the
+browser — 12 of 12 buffers identical. On top of that, the JavaScript and
+the CSS of `en.html`, with comments stripped, match the old ones character
+for character, and the visible markup is unchanged. The self-test gives
+the same figures as before.
+
+---
+
 ## What changed overall
 
 | Before | After |
@@ -291,4 +452,7 @@ by letting peaks through — loudness is no longer bought with clipping.
 | No DSP self-test | `selftest.py` — loudness, limiter, cutoff detector, auto parameters |
 | No licence | MIT, a `LICENSE` file at the root |
 | A default, icon-less browser tab | An SVG favicon across all three files |
+| Docs under mixed names, code comments half in Russian | README/CHANGELOG in British English, Russian versions as `_ru`; Python and `en.html` English throughout, sound bit-identical |
 | Browser "true peak" actually measured samples (up to 6 dB out) | An honest BS.1770-4 measurement, checked against a 16× reference |
+| Browser top-end restoration: 7.4 dB error, tilted | 2.6 dB, flat — close to Python's 2.2 |
+| The exciter multiplied Suno's shimmer upwards | A de-shimmer ahead of the exciter in both versions |
