@@ -22,6 +22,7 @@ from analysis import (average_spectrum, band_energy_db, band_reference,
                       smooth_octave, stereo_width_ratio, to_db)
 from master import album_offset, apply_offset, normalize
 from restore import harmonic_air, match_reference, tone, widen
+from deshimmer import deshimmer, shimmer_amount
 
 
 @dataclass
@@ -32,13 +33,14 @@ class Params:
     mud: float = -2.5
     width: float = 0.35
     follow: bool = True
+    deshimmer: float = 0.6
 
 
 PRESETS = {
-    "mp3-rescue": Params(air=0.75, drive=0.65, shelf=3.0, mud=-2.5, width=0.35),
-    "wav-polish": Params(air=0.55, drive=0.45, shelf=2.0, mud=-1.5, width=0.25),
-    "air-only":   Params(air=0.65, drive=0.50, shelf=2.5, mud=0.0,  width=0.0),
-    "flat":       Params(air=0.0,  drive=0.0,  shelf=0.0, mud=0.0,  width=0.0),
+    "mp3-rescue": Params(air=0.75, drive=0.65, shelf=3.0, mud=-2.5, width=0.35, deshimmer=0.6),
+    "wav-polish": Params(air=0.55, drive=0.45, shelf=2.0, mud=-1.5, width=0.25, deshimmer=0.5),
+    "air-only":   Params(air=0.65, drive=0.50, shelf=2.5, mud=0.0,  width=0.0,  deshimmer=0.5),
+    "flat":       Params(air=0.0,  drive=0.0,  shelf=0.0, mud=0.0,  width=0.0,  deshimmer=0.0),
 }
 
 
@@ -73,7 +75,13 @@ def auto_params(x: np.ndarray, sr: int, cut: dict) -> Params:
     width_now = stereo_width_ratio(x)
     width = float(np.clip(0.45 - 0.35 * width_now, 0.0, 0.5))
 
-    return Params(air=air, drive=drive, shelf=shelf, mud=mud, width=width, follow=True)
+    # Чистка шиммера по измеренному количеству: сколько энергии полосы
+    # де-шиммер снял бы на полной силе. Совсем чистому — лёгкая страховка.
+    amt = shimmer_amount(x, sr, None if cut["full_range"] else cut["hz"])
+    desh = float(np.clip(0.3 + 0.25 * amt, 0.3, 0.8))
+
+    return Params(air=air, drive=drive, shelf=shelf, mud=mud, width=width,
+                  follow=True, deshimmer=desh)
 
 
 # --------------------------------------------------------------------------
@@ -90,9 +98,21 @@ def analyse(x: np.ndarray, sr: int) -> dict:
 def restore(x: np.ndarray, sr: int, p: Params, cut: dict,
             reference: np.ndarray | None = None,
             ref_strength: float = 1.0) -> np.ndarray:
+    # Сначала чистим, потом достраиваем: экситер питается той же полосой,
+    # где живёт шиммер, и без чистки строил бы из него новые гармоники.
+    # Сухой путь чистится на выбранной силе, питание экситера — вдвое
+    # сильнее (не выше 1.0): экситеру нужна только музыкальная структура
+    # полосы, а не её «красота». На тесте это ещё −1.1 дБ мусора в воздухе.
+    c = None if cut["full_range"] else cut["hz"]
+    feed = x
+    if p.deshimmer > 0:
+        feed_s = min(1.0, 2 * p.deshimmer)
+        feed = deshimmer(x, sr, strength=feed_s, cutoff=c)
+        x = feed if feed_s == p.deshimmer else deshimmer(x, sr, strength=p.deshimmer, cutoff=c)
     y = tone(x, sr, p.mud, p.shelf)
     if p.air > 0 and not cut["full_range"]:
-        y = y + harmonic_air(y, sr, cut["hz"], p.air, p.drive, follow=p.follow)
+        src = y if feed is x else tone(feed, sr, p.mud, p.shelf)
+        y = y + harmonic_air(src, sr, cut["hz"], p.air, p.drive, follow=p.follow)
     y = widen(y, sr, p.width)
     if reference is not None:
         y = match_reference(y, sr, reference, strength=ref_strength)
@@ -138,6 +158,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--shelf", type=float, help="шельф воздуха от 11 кГц, дБ")
     g.add_argument("--mud", type=float, help="правка на 300 Гц, дБ (отрицательное — чистка)")
     g.add_argument("--width", type=float, help="ширина стерео выше 2.5 кГц, 0..1")
+    g.add_argument("--deshimmer", type=float,
+                   help="чистка шиммера Suno перед досинтезом, 0..1 (0 — выкл)")
     g.add_argument("--no-follow", action="store_true",
                    help="не следить за огибающей, класть верх ровным слоем")
     g.add_argument("--cutoff", type=float, help="задать точку среза вручную, Гц")
@@ -161,7 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def apply_overrides(p: Params, args) -> Params:
-    for key in ("air", "drive", "shelf", "mud", "width"):
+    for key in ("air", "drive", "shelf", "mud", "width", "deshimmer"):
         v = getattr(args, key)
         if v is not None:
             setattr(p, key, v)
@@ -237,7 +259,7 @@ def main(argv=None) -> int:
             file_params = apply_overrides(auto_params(x, sr, cut), args)
             say(f"    авто: воздух {file_params.air:.2f}, драйв {file_params.drive:.2f}, "
                 f"шельф {file_params.shelf:+.1f} дБ, муть {file_params.mud:+.1f} дБ, "
-                f"ширина {file_params.width:.2f}")
+                f"ширина {file_params.width:.2f}, де-шиммер {file_params.deshimmer:.2f}")
 
         y = restore(x, sr, file_params, cut, reference, args.ref_strength)
         if not cut["full_range"]:
