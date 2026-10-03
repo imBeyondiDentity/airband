@@ -232,6 +232,7 @@ p { margin: 0 0 12px; }
 }
 
 .cell-value.up { color: var(--accent); }
+.cell-value.capped { color: var(--accent-tint); }
 
 /* ---------- transport ---------- */
 
@@ -626,7 +627,7 @@ footer {
       <span class="cell-value" id="rIn">—</span>
     </div>
     <div class="cell">
-      <span class="cell-label">Loudness after</span>
+      <span class="cell-label" id="rOutLabel">Loudness after</span>
       <span class="cell-value" id="rOut">—</span>
     </div>
     <div class="cell">
@@ -1027,6 +1028,209 @@ function attachWidth(ctx, node, w) {
   return mg;
 }
 
+/* Слежение за огибающей — порт _envelope_gain из Python-версии (restore.py).
+   Наклон спектра меряется по двум полосам под срезом и экстраполируется
+   выше него: получается уровень, который был бы у материала без обрезки.
+   Новый верх выводится на этот уровень кадр за кадром. */
+const ENV_N = 2048, ENV_HOP = 512;
+const envFFT = makeFFT(ENV_N);
+const envWin = (() => {
+  const w = new Float64Array(ENV_N);
+  for (let i = 0; i < ENV_N; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / ENV_N);
+  return w;
+})();
+
+function envBandLevels(x, sr, bands) {
+  const nFrames = x.length >= ENV_N ? 1 + Math.floor((x.length - ENV_N) / ENV_HOP) : 0;
+  const binHz = sr / ENV_N;
+  const idx = bands.map((test) => {
+    const ks = [];
+    for (let k = 0; k <= ENV_N / 2; k++) if (test(k * binHz)) ks.push(k);
+    return ks;
+  });
+  const out = bands.map(() => new Float64Array(nFrames));
+  const re = new Float64Array(ENV_N), im = new Float64Array(ENV_N);
+  for (let f = 0; f < nFrames; f++) {
+    const off = f * ENV_HOP;
+    for (let i = 0; i < ENV_N; i++) { re[i] = x[off + i] * envWin[i]; im[i] = 0; }
+    envFFT(re, im);
+    for (let b = 0; b < bands.length; b++) {
+      const ks = idx[b];
+      let s = 0;
+      for (let q = 0; q < ks.length; q++) { const k = ks[q]; s += re[k] * re[k] + im[k] * im[k]; }
+      out[b][f] = 10 * Math.log10(s / Math.max(1, ks.length) + 1e-20);
+    }
+  }
+  return { levels: out, nFrames, empty: idx.map((ks) => ks.length === 0) };
+}
+
+function percentile(arr, q) {
+  const a = Float64Array.from(arr).sort();
+  if (a.length === 0) return 0;
+  const pos = (a.length - 1) * q / 100, lo = Math.floor(pos), hi = Math.ceil(pos);
+  return a[lo] + (a[hi] - a[lo]) * (pos - lo);
+}
+
+function envelopeGain(xMono, sMono, sr, cutoff) {
+  const len = xMono.length;
+  const ones = () => { const g = new Float32Array(len); g.fill(1); return g; };
+  const nyq = sr / 2;
+  const t1 = (f) => f >= cutoff * 0.35 && f < cutoff * 0.60;
+  const t2 = (f) => f >= cutoff * 0.60 && f < cutoff * 0.95;
+  const tf = (f) => f > cutoff && f < nyq * 0.94;
+  const X = envBandLevels(xMono, sr, [t1, t2]);
+  const S = envBandLevels(sMono, sr, [tf]);
+  if (X.nFrames === 0 || X.empty[0] || X.empty[1] || S.empty[0]) return ones();
+  const [l1, l2] = X.levels, ls = S.levels[0];
+  const n = X.nFrames;
+
+  const c1 = Math.sqrt(cutoff * 0.35 * cutoff * 0.60);
+  const c2 = Math.sqrt(cutoff * 0.60 * cutoff * 0.95);
+  const cf = Math.sqrt(cutoff * Math.min(nyq * 0.94, cutoff * 1.5));
+  const p95 = percentile(l2, 95);
+
+  let gdb = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let slope = (l2[i] - l1[i]) / Math.log2(c2 / c1);
+    slope = Math.max(-30, Math.min(-2, slope));
+    const target = l2[i] + slope * Math.log2(cf / c2);
+    let g = Math.max(-30, Math.min(18, target - ls[i]));
+    if (l2[i] < p95 - 45) g = -60;   // почти тишина в опорной полосе — шум не раздуваем
+    gdb[i] = g;
+  }
+
+  // сглаживание по времени ~25 мс окном Ханна (как np.hanning + convolve 'same')
+  const k = Math.max(3, Math.round(0.025 * sr / ENV_HOP) | 1);
+  const ker = new Float64Array(k);
+  let ks = 0;
+  for (let i = 0; i < k; i++) { ker[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (k - 1)); ks += ker[i]; }
+  for (let i = 0; i < k; i++) ker[i] /= ks;
+  const half = Math.floor((k - 1) / 2);
+  const sm = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let j = 0; j < k; j++) { const t = i + half - j; if (t >= 0 && t < n) s += ker[j] * gdb[t]; }
+    sm[i] = s;
+  }
+
+  // в линейный масштаб и интерполяция кадров на отсчёты
+  const g = new Float32Array(len);
+  const gl = new Float64Array(n);
+  for (let i = 0; i < n; i++) gl[i] = Math.pow(10, sm[i] / 20);
+  const pos0 = ENV_N / 2;
+  for (let s = 0; s < len; s++) {
+    const fpos = (s - pos0) / ENV_HOP;
+    if (fpos <= 0) g[s] = gl[0];
+    else if (fpos >= n - 1) g[s] = gl[n - 1];
+    else { const a = Math.floor(fpos), t = fpos - a; g[s] = gl[a] * (1 - t) + gl[a + 1] * t; }
+  }
+  return g;
+}
+
+/* Полосовой FIR с линейной фазой — порт firwin(..., pass_zero=False,
+   window='blackmanharris') из Python-версии. Свёртка через FFT
+   (overlap-add) с компенсацией задержки, как fftconvolve(mode='same'). */
+function firBandpass(lo, hi, sr, taps) {
+  const N = taps | 1, M = (N - 1) / 2, h = new Float64Array(N);
+  const a = lo / (sr / 2), b = hi / (sr / 2);
+  const sinc = (x) => (x === 0 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x));
+  for (let n = 0; n < N; n++) {
+    const t = n - M;
+    const w = 0.35875 - 0.48829 * Math.cos(2 * Math.PI * n / (N - 1))
+      + 0.14128 * Math.cos(4 * Math.PI * n / (N - 1)) - 0.01168 * Math.cos(6 * Math.PI * n / (N - 1));
+    h[n] = (b * sinc(b * t) - a * sinc(a * t)) * w;
+  }
+  // как firwin(scale=True): единичное усиление в центре полосы пропускания
+  const fc = (a + b) / 2;
+  let re = 0, im = 0;
+  for (let n = 0; n < N; n++) { re += h[n] * Math.cos(Math.PI * fc * (n - M)); im += h[n] * Math.sin(Math.PI * fc * (n - M)); }
+  const mag = Math.hypot(re, im);
+  for (let n = 0; n < N; n++) h[n] /= mag;
+  return h;
+}
+
+function convolveSame(x, h) {
+  const N = h.length, M = (N - 1) / 2, len = x.length;
+  let F = 1; while (F < 4 * N) F <<= 1;
+  const B = F - N + 1;
+  const fft = makeFFT(F);
+  const Hr = new Float64Array(F), Hi = new Float64Array(F);
+  for (let i = 0; i < N; i++) Hr[i] = h[i];
+  fft(Hr, Hi);
+  const full = new Float64Array(len + N - 1);
+  const re = new Float64Array(F), im = new Float64Array(F);
+  for (let off = 0; off < len; off += B) {
+    re.fill(0); im.fill(0);
+    const n = Math.min(B, len - off);
+    for (let i = 0; i < n; i++) re[i] = x[off + i];
+    fft(re, im);
+    for (let k = 0; k < F; k++) {   // произведение спектров, затем обратное БПФ через сопряжение
+      const r = re[k] * Hr[k] - im[k] * Hi[k], q = re[k] * Hi[k] + im[k] * Hr[k];
+      re[k] = r; im[k] = -q;
+    }
+    fft(re, im);
+    const lim = Math.min(F, full.length - off);
+    for (let i = 0; i < lim; i++) full[off + i] += re[i] / F;
+  }
+  const y = new Float32Array(len);
+  for (let i = 0; i < len; i++) y[i] = full[i + M];
+  return y;
+}
+
+/* Синтез нового верха отдельным проходом — только ветка экситера, без
+   сухого сигнала. Так её можно измерить и выставить уровень по огибающей,
+   прежде чем подмешивать в основную цепочку. */
+async function renderSynth(buffer, p, cut) {
+  const sr = buffer.sampleRate;
+  const nyq = sr / 2;
+  const room = nyq * 0.93 - cut.hz;
+  if (!(p.air > 0.001 && room > 800)) return null;
+
+  const ctx = new OfflineAudioContext(2, buffer.length, sr);
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  const rumble = bq(ctx, 'highpass', 26, 0.6);
+  const mud = bq(ctx, 'peaking', 300, 0.9);
+  mud.gain.value = p.mud;
+
+  const srcLo = Math.max(2500, cut.hz * 0.42);
+  const srcHi = Math.min(cut.hz * 0.94, nyq * 0.96);
+  const h1 = bq(ctx, 'highpass', srcLo, 0.7);
+  const h2 = bq(ctx, 'highpass', srcLo, 0.7);
+  const l1 = bq(ctx, 'lowpass', srcHi, 0.7);
+  const drive = ctx.createGain();
+  drive.gain.value = 1 + p.drive * 14;
+  const ws = ctx.createWaveShaper();
+  ws.curve = shaperCurve;
+  ws.oversample = '4x';
+  src.connect(rumble); rumble.connect(mud); mud.connect(h1);
+  h1.connect(h2); h2.connect(l1); l1.connect(drive);
+  drive.connect(ws); ws.connect(ctx.destination);
+  src.start();
+  const raw = await ctx.startRendering();
+
+  // Выше среза оставляем только новый материал — FIR с линейной фазой и
+  // ровной полосой до самого верха, как в Python-версии. Раньше здесь были
+  // пологие биквады: на 21 кГц они уже срезали около 2.5 дБ, и
+  // восстановленный верх заваливался к пределу.
+  const top = Math.min(cut.hz * 0.99, nyq * 0.9);
+  const h = firBandpass(top, nyq * 0.94, sr, 1025);
+  for (let c = 0; c < raw.numberOfChannels; c++) {
+    raw.copyToChannel(convolveSame(raw.getChannelData(c), h), c);
+  }
+  return raw;
+}
+
+function monoOf(buffer) {
+  const n = buffer.length, ch = buffer.numberOfChannels;
+  const m = new Float32Array(n);
+  for (let c = 0; c < ch; c++) {
+    const d = buffer.getChannelData(c);
+    for (let i = 0; i < n; i++) m[i] += d[i] / ch;
+  }
+  return m;
+}
+
 async function renderChain(buffer, p, cut) {
   const sr = buffer.sampleRate;
   const nyq = sr / 2;
@@ -1047,34 +1251,21 @@ async function renderChain(buffer, p, cut) {
   const bus = ctx.createGain();
   pre.connect(bus);
 
-  // Экситер — источник новых высоких.
-  const room = nyq * 0.93 - cut.hz;
-  if (p.air > 0.001 && room > 800) {
-    const srcLo = Math.max(2500, cut.hz * 0.42);
-    const srcHi = Math.min(cut.hz * 0.94, nyq * 0.96);
-
-    const h1 = bq(ctx, 'highpass', srcLo, 0.7);
-    const h2 = bq(ctx, 'highpass', srcLo, 0.7);
-    const l1 = bq(ctx, 'lowpass', srcHi, 0.7);
-
-    const drive = ctx.createGain();
-    drive.gain.value = 1 + p.drive * 14;
-
-    const ws = ctx.createWaveShaper();
-    ws.curve = shaperCurve;
-    ws.oversample = '4x';
-
-    const cutF = Math.min(cut.hz * 0.98, nyq * 0.9);
-    const o1 = bq(ctx, 'highpass', cutF, 0.7);
-    const o2 = bq(ctx, 'highpass', cutF, 0.7);
-    const o3 = bq(ctx, 'lowpass', nyq * 0.93, 0.7);
-
-    const wet = ctx.createGain();
-    wet.gain.value = p.air * 0.55;
-
-    pre.connect(h1); h1.connect(h2); h2.connect(l1); l1.connect(drive);
-    drive.connect(ws); ws.connect(o1); o1.connect(o2); o2.connect(o3);
-    o3.connect(wet); wet.connect(bus);
+  // Новый верх: синтезируется отдельным проходом, затем его уровень
+  // выставляется покадрово по огибающей (как в Python-версии) —
+  // air = 1.0 означает естественное продолжение спектра выше среза.
+  const synth = await renderSynth(buffer, p, cut);
+  if (synth) {
+    const g = envelopeGain(monoOf(buffer), monoOf(synth), sr, cut.hz);
+    const wetBuf = ctx.createBuffer(2, buffer.length, sr);
+    for (let c = 0; c < 2; c++) {
+      const sd = synth.getChannelData(c), wd = wetBuf.getChannelData(c);
+      for (let i = 0; i < wd.length; i++) wd[i] = sd[i] * g[i] * p.air;
+    }
+    const wetSrc = ctx.createBufferSource();
+    wetSrc.buffer = wetBuf;
+    wetSrc.connect(bus);
+    wetSrc.start();
   }
 
   const air = bq(ctx, 'highshelf', 11000, 0.7);
@@ -1195,39 +1386,88 @@ function measureLUFS(chans, sampleRate) {
   return lk(mean2);
 }
 
-function truePeakDb(chans) {
-  // Оценка с 4-кратной линейной интерполяцией — чуть пессимистичнее
-  // сэмплового пика, чего для потолка −1 дБ достаточно.
-  let peak = 0;
-  for (const ch of chans) {
-    for (let i = 0; i < ch.length - 1; i++) {
-      const a = Math.abs(ch[i]);
-      if (a > peak) peak = a;
-      const d = (ch[i + 1] - ch[i]) / 4;
-      for (let k = 1; k < 4; k++) {
-        const v = Math.abs(ch[i] + d * k);
-        if (v > peak) peak = v;
+/* True peak по ITU-R BS.1770-4, приложение 2: 4-кратная передискретизация
+   полифазным FIR-фильтром (4 фазы по 12 отводов, коэффициенты из стандарта).
+   Раньше здесь была линейная интерполяция между сэмплами — но точка на
+   прямой между двумя сэмплами не может быть выше большего из них, так что
+   по факту мерился обычный сэмпловый пик. На клипнутом материале это
+   недочитывало до 6 дБ. Сверено с эталоном scipy 16x: остаток 0.1–0.4 дБ —
+   свойство самого стандарта, его закрывает запас в лимитере. */
+const TP_H0 = new Float64Array([0.0017089843750, 0.0109863281250, -0.0196533203125, 0.0332031250000,
+  -0.0594482421875, 0.1373291015625, 0.9721679687500, -0.1022949218750,
+  0.0476074218750, -0.0266113281250, 0.0148925781250, -0.0083007812500]);
+const TP_H1 = new Float64Array([-0.0291748046875, 0.0292968750000, -0.0517578125000, 0.0891113281250,
+  -0.1665039062500, 0.4650878906250, 0.7797851562500, -0.2003173828125,
+  0.1015625000000, -0.0582275390625, 0.0330810546875, -0.0189208984375]);
+const TP_H2 = new Float64Array([-0.0189208984375, 0.0330810546875, -0.0582275390625, 0.1015625000000,
+  -0.2003173828125, 0.7797851562500, 0.4650878906250, -0.1665039062500,
+  0.0891113281250, -0.0517578125000, 0.0292968750000, -0.0291748046875]);
+const TP_H3 = new Float64Array([-0.0083007812500, 0.0148925781250, -0.0266113281250, 0.0476074218750,
+  -0.1022949218750, 0.9721679687500, 0.1373291015625, -0.0594482421875,
+  0.0332031250000, -0.0196533203125, 0.0109863281250, 0.0017089843750]);
+const TP_TAPS = 12;
+const TP_DELAY = 6;
+
+/* Огибающая true peak: для каждого сэмпла — максимум по каналам из самого
+   сэмпла и четырёх межсэмпловых точек рядом с ним. */
+function truePeakEnvelope(chans) {
+  const len = chans[0].length;
+  const env = new Float32Array(len);
+  for (const x of chans) {
+    for (let i = 0; i < len; i++) { const a = Math.abs(x[i]); if (a > env[i]) env[i] = a; }
+    const at = (j) => (j >= 0 && j < len ? x[j] : 0);
+    const edge = (n) => {
+      let y0 = 0, y1 = 0, y2 = 0, y3 = 0;
+      for (let k = 0; k < TP_TAPS; k++) {
+        const v = at(n - k);
+        y0 += TP_H0[k] * v; y1 += TP_H1[k] * v; y2 += TP_H2[k] * v; y3 += TP_H3[k] * v;
       }
+      return Math.max(Math.abs(y0), Math.abs(y1), Math.abs(y2), Math.abs(y3));
+    };
+    const put = (n, best) => { const m = n - TP_DELAY; if (m >= 0 && m < len && best > env[m]) env[m] = best; };
+    for (let n = 0; n < TP_TAPS - 1 && n < len + TP_DELAY; n++) put(n, edge(n));
+    for (let n = TP_TAPS - 1; n < len; n++) {
+      let y0 = 0, y1 = 0, y2 = 0, y3 = 0;
+      for (let k = 0; k < TP_TAPS; k++) {
+        const v = x[n - k];
+        y0 += TP_H0[k] * v; y1 += TP_H1[k] * v; y2 += TP_H2[k] * v; y3 += TP_H3[k] * v;
+      }
+      let best = y0 < 0 ? -y0 : y0;
+      const a1 = y1 < 0 ? -y1 : y1; if (a1 > best) best = a1;
+      const a2 = y2 < 0 ? -y2 : y2; if (a2 > best) best = a2;
+      const a3 = y3 < 0 ? -y3 : y3; if (a3 > best) best = a3;
+      const m = n - TP_DELAY;
+      if (best > env[m]) env[m] = best;
     }
+    for (let n = Math.max(len, TP_TAPS - 1); n < len + TP_DELAY; n++) put(n, edge(n));
   }
+  return env;
+}
+
+function truePeakDb(chans) {
+  const env = truePeakEnvelope(chans);
+  let peak = 0;
+  for (let i = 0; i < env.length; i++) if (env[i] > peak) peak = env[i];
   return 20 * Math.log10(peak + 1e-20);
 }
 
 /* Лимитер с упреждением: сначала считаем нужное усиление на каждый сэмпл,
    потом берём скользящий минимум вперёд — гейн падает заранее,
    до самого пика, без щелчков. */
-function limit(chans, ceilingLin, sampleRate) {
+function limit(chans, ceilingLin, sampleRate, peakEnv) {
   const len = chans[0].length;
   const look = Math.max(1, Math.round(0.002 * sampleRate));
   const hold = Math.max(1, Math.round(0.04 * sampleRate));
+  // Требуемый гейн считается по огибающей true peak, а не по сэмплам.
+  // Запас 0.7 дБ откалиброван по независимому эталону (scipy, 16x):
+  // стандартная 4x-передискретизация на контенте у самого предела частот —
+  // а Airband как раз его и создаёт — недочитывает до ~0.55 дБ.
+  const env = peakEnv || truePeakEnvelope(chans);
+  const inner = ceilingLin * Math.pow(10, -0.7 / 20);
   const req = new Float32Array(len);
   for (let i = 0; i < len; i++) {
-    let p = 0;
-    for (let c = 0; c < chans.length; c++) {
-      const a = Math.abs(chans[c][i]);
-      if (a > p) p = a;
-    }
-    req[i] = p > ceilingLin ? ceilingLin / p : 1;
+    const p = env[i];
+    req[i] = p > inner ? inner / p : 1;
   }
 
   // Скользящий минимум по окну [i, i+look] через монотонную деку.
@@ -1484,20 +1724,47 @@ async function processTrack(t) {
 
   let totalDb = p.target - lufsMid;
   let after = lufsMid;
+  // Огибающая true peak линейна по усилению, поэтому считается один раз
+  // для сухого сигнала и просто масштабируется на каждом проходе.
+  const dryEnv = truePeakEnvelope(dry);
+  const scaledEnv = new Float32Array(dryEnv.length);
   const applyGain = (db) => {
     const g = Math.pow(10, db / 20);
     for (let c = 0; c < chans.length; c++) {
       const src = dry[c], dst = chans[c];
       for (let i = 0; i < src.length; i++) dst[i] = src[i] * g;
     }
-    limit(chans, ceiling, sr);
+    for (let i = 0; i < dryEnv.length; i++) scaledEnv[i] = dryEnv[i] * g;
+    limit(chans, ceiling, sr, scaledEnv);
     return measureLUFS(chans, sr);
   };
 
+  // Подгонка к цели методом секущих. Простое «добавь столько, сколько не
+  // хватило» плохо сходится, когда лимитер съедает часть прибавки: каждый
+  // шаг недобирает. Секущая сама оценивает, сколько реальной громкости даёт
+  // один добавленный децибел на этом конкретном треке.
   after = applyGain(totalDb);
-  for (let pass = 1; pass < 4 && Math.abs(p.target - after) > 0.1 && after > -70; pass++) {
-    totalDb += p.target - after;
+  let prevDb = null, prevAfter = null;
+  for (let pass = 1; pass < 8 && Math.abs(p.target - after) > 0.1 && after > -70; pass++) {
+    let step = p.target - after;
+    if (prevDb !== null && Math.abs(totalDb - prevDb) > 1e-6) {
+      const slope = (after - prevAfter) / (totalDb - prevDb);
+      if (slope > 0.05) step = (p.target - after) / slope;
+    }
+    step = Math.max(-6, Math.min(6, step));
+    prevDb = totalDb; prevAfter = after;
+    totalDb += step;
     after = applyGain(totalDb);
+  }
+
+  // Финальная проверка: если плавная кривая гейна где-то всё же оставила
+  // пик над потолком — статический сдвиг вниз на разницу.
+  let finalTp = truePeakDb(chans);
+  if (finalTp > p.ceiling) {
+    const trim = Math.pow(10, (p.ceiling - finalTp) / 20);
+    for (const ch of chans) for (let i = 0; i < ch.length; i++) ch[i] *= trim;
+    finalTp = p.ceiling;
+    after = measureLUFS(chans, sr);
   }
 
   const out = getDecodeCtx().createBuffer(chans.length, rendered.length, sr);
@@ -1516,7 +1783,8 @@ async function processTrack(t) {
     fullRange: t.cut.fullRange,
     lufsIn,
     lufsOut: after,
-    peak: truePeakDb(chans),
+    target: p.target,
+    peak: finalTp,
     airGain: eB - eA
   };
   t.status = 'Done';
@@ -1735,6 +2003,11 @@ function updateReadout() {
   $('rAir').className = 'cell-value' + (s && s.airGain > 3 ? ' up' : '');
   $('rIn').textContent = s ? fmtLufs(s.lufsIn) : '—';
   $('rOut').textContent = s ? fmtLufs(s.lufsOut) : '—';
+  // Если трек упёрся в предел громкости при честном потолке true peak —
+  // говорим об этом прямо, а не молча недобираем до цели.
+  const capped = s && s.target !== undefined && s.lufsOut < s.target - 0.3;
+  $('rOutLabel').textContent = capped ? 'Loudness after — max without distortion' : 'Loudness after';
+  $('rOut').classList.toggle('capped', !!capped);
   $('rPk').textContent = s ? fmtDb(s.peak) : '—';
 }
 
