@@ -1,4 +1,4 @@
-# Airband
+# Airband For Browser 
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
