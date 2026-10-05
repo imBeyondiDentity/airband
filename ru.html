@@ -436,6 +436,14 @@ p { margin: 0 0 12px; }
   opacity: .4;
   cursor: default;
 }
+.chip-auto.is-busy {
+  pointer-events: none;
+  animation: chip-busy .9s ease-in-out infinite alternate;
+}
+@keyframes chip-busy {
+  from { opacity: .55; }
+  to { opacity: 1; }
+}
 
 .chip {
   background: var(--panel-2);
@@ -1445,22 +1453,41 @@ function deshimmer(L, R, sr, strengths, cutoff) {
   return res;
 }
 
-/* Сколько энергии полосы чистка сняла бы на полной силе, дБ — для авто-режима. */
-function shimmerAmount(L, R, sr, cutoff) {
+/* Сколько энергии полосы чистка сняла бы на полной силе, дБ — для авто-режима.
+   Оценка смотрит на куски трека по 10 с; у длинного трека берётся равномерная выборка не больше
+   SHIMMER_MAX_SPANS кусков (всего 60 с) — для треков до минуты результат точный, а на длинных
+   стоимость перестаёт расти с длиной. Написана генератором, чтобы страница успевала «дышать»
+   между шагами, а не замирала. */
+const SHIMMER_MAX_SPANS = 6;
+
+function shimmerSpans(len, sr, maxSpans) {
+  const chunk = Math.floor(Math.floor(DS.CHUNK_S * sr) / DS.HOP) * DS.HOP;
+  const all = [];
+  for (let a = 0; a < len; a += chunk) {
+    const b = Math.min(len, a + chunk);
+    if (b - a >= DS.N) all.push([a, b]);
+  }
+  if (all.length <= maxSpans) return all;
+  const pick = [];
+  for (let i = 0; i < maxSpans; i++) pick.push(all[Math.round(i * (all.length - 1) / (maxSpans - 1))]);
+  return pick;
+}
+
+function* shimmerSteps(L, R, sr, cutoff, maxSpans) {
   let lo = DS.LO, hi = DS.HI;
   if (cutoff) hi = Math.min(hi, cutoff * 0.97);
   if (hi <= lo + 500) return 0;
   const N = DS.N, k0 = Math.ceil(lo * N / sr), k1 = Math.floor(hi * N / sr);
-  const chunk = Math.floor(Math.floor(DS.CHUNK_S * sr) / DS.HOP) * DS.HOP;
-  let tot = 0, kept = 0;
   const pDb = (p) => 10 * Math.log10(p + 1e-24);
-  for (let a = 0; a < L.length; a += chunk) {
-    const b = Math.min(L.length, a + chunk);
-    if (b - a < N) continue;
+  let tot = 0, kept = 0;
+  for (const [a, b] of shimmerSpans(L.length, sr, maxSpans)) {
     const m = new Float64Array(b - a), s = new Float64Array(b - a);
     for (let i = a; i < b; i++) { m[i - a] = (L[i] + R[i]) * 0.5; s[i - a] = (L[i] - R[i]) * 0.5; }
     for (const [sig, st] of [[m, DS.MID], [s, 1.0]]) {
-      const S = dsStft(sig), G = dsUnitGains(S, sr, lo, hi, pDb);
+      const S = dsStft(sig);
+      yield;
+      const G = dsUnitGains(S, sr, lo, hi, pDb);
+      yield;
       const nb = G ? G.k1 - G.k0 + 1 : 0;
       for (let f = 0; f < S.nf; f++) for (let k = k0; k <= k1; k++) {
         const P = S.re[f * N + k] ** 2 + S.im[f * N + k] ** 2;
@@ -1468,9 +1495,42 @@ function shimmerAmount(L, R, sr, cutoff) {
         const q = k - (G ? G.k0 : 0);
         kept += P * (G && q >= 0 && q < nb ? Math.pow(10, st * G.gdb[f * nb + q] / 10) : 1);
       }
+      yield;   // точка, где странице можно вздохнуть
     }
   }
   return 10 * Math.log10(tot / Math.max(kept, 1e-24));
+}
+
+function shimmerAmount(L, R, sr, cutoff, maxSpans = SHIMMER_MAX_SPANS) {
+  const g = shimmerSteps(L, R, sr, cutoff, maxSpans);
+  let r;
+  while (!(r = g.next()).done);
+  return r.value;
+}
+
+async function shimmerAmountAsync(L, R, sr, cutoff) {
+  const g = shimmerSteps(L, R, sr, cutoff, SHIMMER_MAX_SPANS);
+  let r;
+  while (!(r = g.next()).done) await new Promise((res) => setTimeout(res, 0));
+  return r.value;
+}
+
+/* Оценка запоминается на треке и считается в фоне сразу после анализа трека,
+   так что к клику по «Авто» она обычно уже готова. */
+function ensureShimmer(t) {
+  if (!t.shimmerPromise) {
+    const o = t.orig;
+    const L0 = o.getChannelData(0), R0 = o.numberOfChannels > 1 ? o.getChannelData(1) : L0;
+    t.shimmerPromise = shimmerAmountAsync(L0, R0, o.sampleRate, t.cut.fullRange ? null : t.cut.hz)
+      .then((v) => (t.shimmerAmt = v));
+  }
+  return t.shimmerPromise;
+}
+
+/* Запускает оценку в фоне, после первой отрисовки — только для активного трека:
+   она нужна одному лишь «Авто», обработке не нужна. */
+function warmShimmer(t) {
+  if (t && t.specA && !t.shimmerPromise) setTimeout(() => ensureShimmer(t), 60);
 }
 
 async function renderChain(buffer, p, cut, feedBuf) {
@@ -1840,7 +1900,7 @@ const PRESETS = {
    - крутизна обрыва -> насколько агрессивно достраивать верх;
    - реальный избыток на 250-400 Гц -> чистить муть или нет;
    - существующая стерео-ширина -> сколько ещё досыпать. */
-function computeAutoParams(t) {
+async function computeAutoParams(t) {
   const cut = t.cut;
   let air = 0, drive = 0, shelf = 0;
   if (!cut.fullRange) {
@@ -1856,15 +1916,15 @@ function computeAutoParams(t) {
   const widthNow = stereoWidthRatio(t.orig);
   const width = Math.max(0, Math.min(0.5, 0.45 - 0.35 * widthNow));
 
-  const o = t.orig;
-  const L0 = o.getChannelData(0), R0 = o.numberOfChannels > 1 ? o.getChannelData(1) : L0;
-  const amt = shimmerAmount(L0, R0, o.sampleRate, cut.fullRange ? null : cut.hz);
+  const amt = await ensureShimmer(t);
   const desh = Math.max(0.3, Math.min(0.8, 0.3 + 0.25 * amt));
 
   return { air, drive, shelf, mud, width, glue: 0, deshimmer: desh };
 }
 
 const state = {
+  autoToken: 0,
+  autoPending: null,
   tracks: [],
   activeId: null,
   seq: 0,
@@ -1930,7 +1990,7 @@ async function addFiles(fileList) {
     }
     t.file = null;
     renderTracks();
-    if (t.id === state.activeId) { analyseOriginal(t); drawScope(); updateReadout(); }
+    if (t.id === state.activeId) { analyseOriginal(t); warmShimmer(t); drawScope(); updateReadout(); }
   }
   updateButtons();
 }
@@ -2067,6 +2127,8 @@ async function processAll() {
   if (state.busy) return;
   state.busy = true;
   updateButtons();
+  // Даём дождаться незаконченному «Авто», чтобы его параметры успели примениться.
+  if (state.autoPending) await state.autoPending;
   for (const t of state.tracks) {
     if (!t.orig || t.error) continue;
     try {
@@ -2250,6 +2312,7 @@ function setActive(id) {
   state.activeId = id;
   const t = state.tracks.find((x) => x.id === id);
   if (t) analyseOriginal(t);
+  warmShimmer(t);
   renderTracks();
   drawScope();
   updateReadout();
@@ -2334,6 +2397,9 @@ for (const c of controls) {
 }
 
 function markPresetCustom() {
+  // Любой ручной выбор отменяет «Авто», который ещё считается.
+  state.autoToken++;
+  $('autoChip').classList.remove('is-busy');
   const p = state.params;
   let match = null;
   for (const [k, v] of Object.entries(PRESETS)) {
@@ -2349,9 +2415,19 @@ document.querySelectorAll('.chip').forEach((chip) => {
     if (chip.dataset.preset === 'auto') {
       const t = state.tracks.find((x) => x.id === state.activeId);
       if (!t || !t.specA) return;
-      Object.assign(state.params, computeAutoParams(t));
-      syncControls();
-      document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('is-on', c === chip));
+      const token = ++state.autoToken;
+      chip.classList.add('is-busy');
+      state.autoPending = computeAutoParams(t)
+        .then((params) => {
+          // Применяем, только если за это время ничего другого не выбрали и трек всё ещё активный.
+          if (token === state.autoToken && state.tracks.includes(t) && state.activeId === t.id) {
+            Object.assign(state.params, params);
+            syncControls();
+            document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('is-on', c === chip));
+          }
+        })
+        .catch((e) => console.error(e))
+        .finally(() => { if (token === state.autoToken) chip.classList.remove('is-busy'); });
       return;
     }
     Object.assign(state.params, PRESETS[chip.dataset.preset]);

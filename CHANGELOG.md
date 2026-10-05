@@ -439,6 +439,70 @@ the same figures as before.
 
 ---
 
+## The Auto preset no longer freezes the page
+
+### The symptom and the cause
+Clicking "Auto — from track analysis" froze the page for five or six
+seconds. Timing the click part by part showed that nearly all of it went
+on one step: the estimate of how much shimmer a track has. It ran on the
+main thread, in the click handler, over the whole track, and it was
+recomputed on every click. Everything else Auto does takes milliseconds.
+The cost grows with the length of the track: on the (slow) test machine,
+1 s for 10 s of audio and about 16 s for a four-minute track.
+
+### The fix
+- The estimate is computed in steps, with a breath for the page between
+  them, so buttons and sliders stay alive.
+- The result is cached on the track and starts in the background as soon as
+  the track has been loaded and analysed, so by the time Auto is clicked
+  it's usually ready.
+- On a long track the estimate takes an even sample of at most 60 s of
+  audio (six 10 s chunks). For tracks up to a minute it's exactly what it
+  was, down to the last digit.
+- While it's working, the Auto button pulses.
+
+### Results (four-minute test track)
+| | Longest freeze | Until the parameters are applied |
+|---|---|---|
+| Before | 15.9 s | 15.9 s |
+| After, clicked right after loading | 0.5 s | 4 s |
+| After, clicked once the background has finished | 0.03 s | 0.05 s |
+
+The test machine is a slow one; on an ordinary computer all of these are
+several times shorter.
+
+### What the sampling costs
+On a track where shimmer is present only in patches (three patches in four
+minutes, a deliberately awkward case) the sampled estimate differs from the
+full one by 0.1 dB, which moves the cleanup strength by 0.024. On a clean
+track the difference is 0.0004 dB. On real Suno material this still needs
+listening to rather than measuring. The Python version keeps the exact
+full-track estimate, since it has no page to freeze.
+
+### Races closed
+Because Auto now finishes a moment after the click, three situations had to
+be handled so a stale result can't overwrite a newer choice: choosing
+another preset right after Auto, moving a slider right after Auto, and
+switching to another track right after Auto. In each, the late result is
+discarded. "Process all" now waits for a pending Auto to finish applying its
+parameters first, so processing can't start with the old ones.
+
+### Checked
+- the exact estimate matches the old one to the last digit on all six test
+  tracks;
+- the parameters Auto produces are identical to the old version's on three
+  tracks, in both language versions;
+- processing results for 4 tracks in 3 modes (including Auto followed
+  immediately by "Process all") are bit-identical to before, 12 of 12
+  buffers in each language version;
+- the four race scenarios above behave correctly.
+
+### Still to do
+Processing itself ("Process all") still holds the page for as long as it
+takes. Moving it into a Web Worker remains the next step.
+
+---
+
 ## What changed overall
 
 | Before | After |
@@ -453,6 +517,7 @@ the same figures as before.
 | No licence | MIT, a `LICENSE` file at the root |
 | A default, icon-less browser tab | An SVG favicon across all three files |
 | Docs under mixed names, code comments half in Russian | README/CHANGELOG in British English, Russian versions as `_ru`; Python and `en.html` English throughout, sound bit-identical |
+| Auto froze the page for 5–6 s (16 s on a four-minute track) | Computed in steps and in the background: 0.03 s freeze once it's warm, results unchanged |
 | Browser "true peak" actually measured samples (up to 6 dB out) | An honest BS.1770-4 measurement, checked against a 16× reference |
 | Browser top-end restoration: 7.4 dB error, tilted | 2.6 dB, flat — close to Python's 2.2 |
 | The exciter multiplied Suno's shimmer upwards | A de-shimmer ahead of the exciter in both versions |
