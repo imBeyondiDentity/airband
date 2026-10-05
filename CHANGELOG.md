@@ -503,6 +503,57 @@ takes. Moving it into a Web Worker remains the next step.
 
 ---
 
+## The player: audio can no longer outlive Clear
+
+### The symptom
+After processing and listening to a track, pressing Clear and loading another
+one left the old processed version playing in the background, impossible to
+stop short of reloading the page, while the new track wouldn't play.
+
+### What was found
+- The player's stop logic depended entirely on `stop()` working on the audio
+  sources. On the desktop browser used for testing it did, and the exact
+  sequence from the report couldn't be reproduced there. But if a source's
+  `stop()` has no effect (the sort of thing mobile browsers sometimes do),
+  the app would let go of a source that is still sounding: Play and Pause
+  would then control nothing, and the sound would carry on. Simulating
+  precisely that, with `stop()` made to do nothing, reproduced the symptom in
+  the old code: the sound continued after Pause, and after Clear an old
+  "ghost" kept playing.
+- A separate, real bug: after a track played to the end by itself, the
+  position was left at the end instead of the start, so the next Play played
+  only the last 50 ms and stopped. From the outside it looked like the track
+  wouldn't play.
+
+### The fix
+- Every source is registered when it's created, and everything registered is
+  stopped, so none can be lost, even if something fails midway through
+  starting.
+- Stopping now silences first: the gain nodes are muted and disconnected from
+  the output, so even a source whose `stop()` does nothing can no longer be
+  heard.
+- Clear drops the audio context altogether; the next Play creates a fresh
+  one, so nothing from the old session can keep sounding.
+- After a natural end the position goes back to the start and the progress
+  bar rewinds.
+- On Play, a context in the `interrupted` state (iOS) is resumed as well, not
+  only a `suspended` one.
+
+### Checked
+- With `stop()` disabled: after Pause the signal on the gain nodes drops to
+  zero (before: it carried on); after Clear the old context is closed (before:
+  the old sound ghosted on).
+- Play after a natural end starts from the beginning (before: the last 50 ms).
+- A/B still switches the two versions; other flows and live-source counts are
+  unchanged. Both language versions.
+
+### What was not checked
+Safari on iPhone: no WebKit is available here, so the failing-`stop()` case
+was simulated rather than observed on the device. If it happens again, note
+the device, the browser and the exact order of taps.
+
+---
+
 ## What changed overall
 
 | Before | After |
@@ -518,6 +569,7 @@ takes. Moving it into a Web Worker remains the next step.
 | A default, icon-less browser tab | An SVG favicon across all three files |
 | Docs under mixed names, code comments half in Russian | README/CHANGELOG in British English, Russian versions as `_ru`; Python and `en.html` English throughout, sound bit-identical |
 | Auto froze the page for 5–6 s (16 s on a four-minute track) | Computed in steps and in the background: 0.03 s freeze once it's warm, results unchanged |
+| Clear could leave old audio playing, unstoppable; replay after the end played 50 ms | Every source registered, silenced first, context dropped on Clear; replay starts from the beginning |
 | Browser "true peak" actually measured samples (up to 6 dB out) | An honest BS.1770-4 measurement, checked against a 16× reference |
 | Browser top-end restoration: 7.4 dB error, tilted | 2.6 dB, flat — close to Python's 2.2 |
 | The exciter multiplied Suno's shimmer upwards | A de-shimmer ahead of the exciter in both versions |

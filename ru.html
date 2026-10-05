@@ -2457,7 +2457,7 @@ $('fileInput').addEventListener('change', (e) => {
 
 $('processAllBtn').addEventListener('click', processAll);
 $('clearBtn').addEventListener('click', () => {
-  stopPlayback();
+  resetPlayer();
   state.tracks = [];
   state.activeId = null;
   renderTracks();
@@ -2469,7 +2469,7 @@ $('clearBtn').addEventListener('click', () => {
    10. Плеер с мгновенным A/B
    ============================================================ */
 
-const player = { ctx: null, a: null, b: null, gA: null, gB: null, t0: 0, offset: 0, on: false, raf: 0 };
+const player = { ctx: null, a: null, b: null, gA: null, gB: null, t0: 0, offset: 0, on: false, raf: 0, live: new Set() };
 
 function playerCtx() {
   if (!player.ctx) player.ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -2499,44 +2499,64 @@ function startPlayback() {
   const t = state.tracks.find((x) => x.id === state.activeId);
   if (!t || !t.orig) return;
   const ctx = playerCtx();
-  if (ctx.state === 'suspended') ctx.resume();
+  if (ctx.state !== 'running') ctx.resume();   // 'suspended' или, на iOS, 'interrupted'
   stopSources();
+  try {
+    player.gA = ctx.createGain();
+    player.gB = ctx.createGain();
+    player.gA.connect(ctx.destination);
+    player.gB.connect(ctx.destination);
 
-  player.gA = ctx.createGain();
-  player.gB = ctx.createGain();
-  player.gA.connect(ctx.destination);
-  player.gB.connect(ctx.destination);
+    const make = (buf, gain) => {
+      const s = ctx.createBufferSource();
+      s.buffer = buf;
+      s.connect(gain);
+      player.live.add(s);   // каждый источник попадает в реестр, поэтому потерять его нельзя
+      return s;
+    };
+    player.a = make(t.orig, player.gA);
+    player.b = t.proc ? make(t.proc, player.gB) : null;
 
-  player.a = ctx.createBufferSource();
-  player.a.buffer = t.orig;
-  player.a.connect(player.gA);
+    applyAB(false);
 
-  if (t.proc) {
-    player.b = ctx.createBufferSource();
-    player.b.buffer = t.proc;
-    player.b.connect(player.gB);
+    const off = Math.min(player.offset, t.orig.duration - 0.05);
+    player.t0 = ctx.currentTime - off;
+    player.a.start(0, Math.max(0, off));
+    if (player.b) player.b.start(0, Math.max(0, off));
+    const main = player.a;
+    main.onended = () => {
+      if (player.a === main && player.on) { stopPlayback(); player.offset = 0; rewindUI(); }
+    };
+
+    player.on = true;
+    $('playBtn').textContent = 'Пауза';
+    tick();
+  } catch (err) {
+    // Если что-то упало на полпути — ничего недозапущенного не должно остаться играть.
+    stopSources();
+    player.on = false;
+    console.error(err);
   }
-
-  applyAB(false);
-
-  const off = Math.min(player.offset, t.orig.duration - 0.05);
-  player.t0 = ctx.currentTime - off;
-  player.a.start(0, Math.max(0, off));
-  if (player.b) player.b.start(0, Math.max(0, off));
-  player.a.onended = () => { if (player.on) { player.offset = 0; stopPlayback(); } };
-
-  player.on = true;
-  $('playBtn').textContent = 'Пауза';
-  tick();
 }
 
 function stopSources() {
-  for (const k of ['a', 'b']) {
-    if (player[k]) {
-      try { player[k].onended = null; player[k].stop(); } catch (e) { /* уже остановлен */ }
-      player[k] = null;
-    }
+  // Сначала тишина, что бы ни делали сами источники: усилители заглушаются
+  // и отключаются от выхода, так что даже источник, у которого stop() не
+  // срабатывает (такое бывает в мобильных браузерах), больше не слышен.
+  for (const g of [player.gA, player.gB]) {
+    if (!g) continue;
+    try { g.gain.cancelScheduledValues(0); g.gain.value = 0; } catch (e) { /* контекст мог быть уже закрыт */ }
+    try { g.disconnect(); } catch (e) { /* уже отключён */ }
   }
+  player.gA = null;
+  player.gB = null;
+  for (const src of player.live) {
+    try { src.onended = null; src.stop(); } catch (e) { /* уже остановлен */ }
+    try { src.disconnect(); } catch (e) { /* уже отключён */ }
+  }
+  player.live.clear();
+  player.a = null;
+  player.b = null;
 }
 
 function stopPlayback() {
@@ -2546,6 +2566,26 @@ function stopPlayback() {
   cancelAnimationFrame(player.raf);
   const btn = $('playBtn');
   if (btn) btn.textContent = 'Слушать';
+}
+
+function rewindUI() {
+  const fill = $('seekFill');
+  if (fill) fill.style.width = '0%';
+  $('time').textContent = '0:00';
+  $('seek').setAttribute('aria-valuenow', '0');
+}
+
+function resetPlayer() {
+  stopPlayback();
+  player.offset = 0;
+  rewindUI();
+  // Контекст звука выбрасывается целиком: при следующем «Слушать» создастся
+  // новый, так что ничто из старой сессии не может продолжать звучать.
+  if (player.ctx) {
+    const old = player.ctx;
+    player.ctx = null;
+    old.close().catch(() => {});
+  }
 }
 
 function tick() {
