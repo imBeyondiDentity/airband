@@ -60,7 +60,7 @@ def _read_ffmpeg(path: Path, sr: int):
     if not shutil.which("ffmpeg"):
         raise AudioError(
             "ffmpeg or the soundfile package is needed to read this file.\n"
-            "  brew install ffmpeg   |   apt install ffmpeg   |   pip install soundfile"
+            "  brew install ffmpeg   |   apt install ffmpeg   |   pip install soundfile (inside a virtual environment)"
         )
     ch = _ffprobe_channels(path)
     ch = 2 if ch > 2 else ch

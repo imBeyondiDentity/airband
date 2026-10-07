@@ -6,11 +6,25 @@ The local version. It does the same job as the browser one, more precisely, and 
 
 ## Installation
 
+On Debian, Ubuntu, recent Fedora and Homebrew Python, a bare `pip install` is refused with `error: externally-managed-environment` (PEP 668). The system Python belongs to the package manager, so install into a virtual environment instead:
+
 ```
+python3 -m venv ~/airband-env
+source ~/airband-env/bin/activate      # Windows: airband-env\Scripts\activate
 pip install numpy scipy
 ```
 
-That's it. Everything else is optional:
+Activate it again (the `source` line) in every new terminal before running `python airband.py`. If `venv` is missing on Debian or Ubuntu, `sudo apt install python3-venv` first.
+
+Alternatively, use the distribution's own packages, no environment needed:
+
+```
+sudo apt install python3-numpy python3-scipy
+```
+
+Avoid `--break-system-packages`; it can leave the system Python in a mess. On Windows and on a plain Python install, `pip install numpy scipy` works directly.
+
+Everything else is optional:
 
 - `soundfile` — reading files without ffmpeg
 - `matplotlib` — for the `--report` switch
@@ -73,6 +87,9 @@ python airband.py album/ --analyze
 | `--ref-strength` | 0..1, how strongly to match |
 | `--report` | PNG of the spectra before and after |
 | `--analyze` | measurement only |
+
+
+How each setting works in detail, and what the matching slider in the browser version does, is described in the [main README](../README.md), in the section "What each control does".
 
 ## What's inside
 

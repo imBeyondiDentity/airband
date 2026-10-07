@@ -201,8 +201,8 @@ def tone(x: np.ndarray, sr: int, mud_db: float, shelf_db: float,
 
 def widen(x: np.ndarray, sr: int, amount: float, split_hz: float = 2500.0,
           taps: int = 513) -> np.ndarray:
-    """Widening only above split_hz. The low end stays mono —
-    otherwise the bass drifts apart on a club system."""
+    """Widening only above split_hz. Below it the width is left exactly as
+    it was, so the bass isn't pushed apart on a club system."""
     if amount <= 0 or x.shape[1] < 2:
         return x
     mid = (x[:, 0] + x[:, 1]) * 0.5

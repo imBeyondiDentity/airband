@@ -6,11 +6,25 @@
 
 ## Установка
 
+На Debian, Ubuntu, свежем Fedora и Python из Homebrew голый `pip install` не работает и выдаёт `error: externally-managed-environment` (PEP 668). Системный Python принадлежит менеджеру пакетов, поэтому ставить нужно в виртуальное окружение:
+
 ```
+python3 -m venv ~/airband-env
+source ~/airband-env/bin/activate      # Windows: airband-env\Scripts\activate
 pip install numpy scipy
 ```
 
-Всё. Остальное опционально:
+В каждом новом терминале строку с `source` нужно выполнить заново, прежде чем запускать `python airband.py`. Если на Debian или Ubuntu нет `venv`, сначала `sudo apt install python3-venv`.
+
+Другой путь — пакеты самого дистрибутива, окружение не нужно:
+
+```
+sudo apt install python3-numpy python3-scipy
+```
+
+`--break-system-packages` лучше не использовать: можно сломать системный Python. На Windows и на обычной установке Python работает просто `pip install numpy scipy`.
+
+Остальное опционально:
 
 - `soundfile` — чтение файлов без ffmpeg
 - `matplotlib` — ключ `--report`
@@ -73,6 +87,9 @@ python airband.py album/ --analyze
 | `--ref-strength` | 0..1, насколько сильно подгонять |
 | `--report` | PNG со спектрами до и после |
 | `--analyze` | только замер |
+
+
+Как именно работает каждая настройка и что делает соответствующий ползунок в браузерной версии, описано в [основном README](../README_ru.md), в разделе «Что делает каждый ползунок».
 
 ## Что внутри
 
