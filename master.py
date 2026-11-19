@@ -18,6 +18,7 @@ from scipy.ndimage import minimum_filter1d
 from scipy.signal import fftconvolve
 
 from analysis import loudness_lufs, true_peak_db
+from dynamics import soft_clip
 
 
 def _trailing_min(req: np.ndarray, hold: int) -> np.ndarray:
@@ -71,7 +72,7 @@ def _gain_curve(peak: np.ndarray, ceiling: float, look: int, hold: int) -> np.nd
 
 def limit(x: np.ndarray, ceiling_db: float = -1.0, sr: int = 48000,
           lookahead_ms: float = 2.0, hold_ms: float = 40.0,
-          margin_db: float = 0.4) -> np.ndarray:
+          margin_db: float = 0.4, clip: float = 0.0) -> np.ndarray:
     """Hold the peaks under the ceiling.
 
     The gain curve is computed per sample, but the ceiling is taken with a
@@ -79,12 +80,16 @@ def limit(x: np.ndarray, ceiling_db: float = -1.0, sr: int = 48000,
     oversampled signal, and if the margin wasn't enough, a static offset is
     added. That way inter-sample overshoots don't get through, and the track
     doesn't have to be held in memory at four times its size.
+
+    With clip > 0 a soft clipper rounds the tops of the peaks first (see
+    dynamics.soft_clip), so the limiter has less to do. At 0 nothing changes.
     """
     ceiling = 10 ** (ceiling_db / 20)
     inner = ceiling * 10 ** (-margin_db / 20)
     look = max(8, int(round(lookahead_ms * 1e-3 * sr)))
     hold = max(1, int(round(hold_ms * 1e-3 * sr)))
 
+    x = soft_clip(x, inner, clip)
     peak = np.abs(x).max(axis=1)
     y = x * _gain_curve(peak, inner, look, hold)[:, None]
     np.clip(y, -ceiling, ceiling, out=y)
@@ -103,7 +108,7 @@ def limit(x: np.ndarray, ceiling_db: float = -1.0, sr: int = 48000,
 
 def normalize(x: np.ndarray, sr: int, target_lufs: float,
               ceiling_db: float = -1.0, tol_db: float = 0.1,
-              max_passes: int = 4) -> tuple[np.ndarray, dict]:
+              max_passes: int = 4, clip: float = 0.0) -> tuple[np.ndarray, dict]:
     """Bring to the target loudness and hold the peaks.
 
     The limiter itself lowers the loudness, so one pass isn't enough:
@@ -117,13 +122,13 @@ def normalize(x: np.ndarray, sr: int, target_lufs: float,
                           "passes": 0}
 
     total = target_lufs - before
-    y = limit(x * 10 ** (total / 20), ceiling_db, sr)
+    y = limit(x * 10 ** (total / 20), ceiling_db, sr, clip=clip)
     after = loudness_lufs(y, sr)
 
     passes = 1
     while abs(target_lufs - after) > tol_db and passes < max_passes:
         total += target_lufs - after
-        y = limit(x * 10 ** (total / 20), ceiling_db, sr)
+        y = limit(x * 10 ** (total / 20), ceiling_db, sr, clip=clip)
         after = loudness_lufs(y, sr)
         passes += 1
 
@@ -149,9 +154,9 @@ def album_offset(loudnesses: list[float], target_lufs: float) -> float:
 
 
 def apply_offset(x: np.ndarray, sr: int, offset_db: float,
-                 ceiling_db: float = -1.0) -> tuple[np.ndarray, dict]:
+                 ceiling_db: float = -1.0, clip: float = 0.0) -> tuple[np.ndarray, dict]:
     before = loudness_lufs(x, sr)
-    y = limit(x * 10 ** (offset_db / 20), ceiling_db, sr)
+    y = limit(x * 10 ** (offset_db / 20), ceiling_db, sr, clip=clip)
     return y, {
         "lufs_before": before,
         "lufs_after": loudness_lufs(y, sr),

@@ -18,6 +18,7 @@ from analysis import (average_spectrum, band_reference, detect_cutoff,
                       loudness_lufs, smooth_octave, to_db, true_peak_db)
 from master import _gain_curve, limit, normalize
 from restore import harmonic_air, tone
+from dynamics import _split, mono_bass, multiband, soft_clip
 
 SR = 48000
 fails: list[str] = []
@@ -297,6 +298,60 @@ def test_deshimmer() -> None:
           f"clean {a_clean:.2f} dB, with shimmer {a_dirty:.2f} dB")
 
 
+def test_dynamics() -> None:
+    print("Multiband, mono bass, soft clipper")
+    rng = np.random.default_rng(7)
+    n = SR * 12
+    t = np.arange(n) / SR
+    pulse = (np.sin(2 * np.pi * 2 * t) > 0.6).astype(float)         # loud/quiet passages
+    x = np.stack([np.sin(2 * np.pi * 80 * t) * (0.2 + 0.5 * pulse) + 0.05 * rng.standard_normal(n),
+                  np.sin(2 * np.pi * 80 * t + 1) * (0.2 + 0.5 * pulse) + 0.05 * rng.standard_normal(n)], 1)
+
+    check("at amount 0 all three stages hand back the input untouched",
+          multiband(x, SR, 0) is x and mono_bass(x, SR, 0) is x and soft_clip(x, 1.0, 0) is x)
+
+    bands = _split(x[:SR * 4], SR)
+    err = float(np.abs(sum(bands) - x[:SR * 4]).max())
+    check("the four bands add back to the input", err < 1e-9, f"error {err:.1e}")
+
+    y = multiband(x, SR, 1.0)
+    swing_in = np.percentile(np.abs(x), 99) / np.percentile(np.abs(x), 50)
+    swing_out = np.percentile(np.abs(y), 99) / np.percentile(np.abs(y), 50)
+    check("the compressor narrows the loud/quiet swing", swing_out < swing_in,
+          f"{swing_in:.2f} → {swing_out:.2f}")
+
+    z = np.stack([np.sin(2 * np.pi * 60 * t[:SR * 4]) + 0.3 * np.sin(2 * np.pi * 2000 * t[:SR * 4]),
+                  -np.sin(2 * np.pi * 60 * t[:SR * 4]) + 0.3 * np.sin(2 * np.pi * 2000 * t[:SR * 4] + 1)], 1)
+    m = mono_bass(z, SR, 1.0)
+
+    def side_db(a, f):
+        s = (a[:, 0] - a[:, 1]) / 2
+        spec = np.fft.rfft(s * np.hanning(len(s)))
+        k = int(f * len(s) / SR)
+        return 20 * np.log10(np.abs(spec[k - 1:k + 2]).max() + 1e-12)
+
+    drop60 = side_db(z, 60) - side_db(m, 60)
+    drop2k = side_db(z, 2000) - side_db(m, 2000)
+    check("mono bass removes the side signal at 60 Hz", drop60 > 30, f"{drop60:.0f} dB")
+    check("mono bass leaves 2 kHz alone", abs(drop2k) < 0.1, f"{drop2k:+.2f} dB")
+    check("mono bass leaves the mid signal alone",
+          float(np.abs((z[:, 0] + z[:, 1]) - (m[:, 0] + m[:, 1])).max()) < 1e-9)
+
+    loud = x * 3.0
+    c = soft_clip(loud, 0.9, 1.0)
+    knee = 0.9 * 10 ** (-3 / 20)
+    quiet = np.abs(loud) < knee
+    check("the soft clipper never passes the ceiling", float(np.abs(c).max()) <= 0.9 + 1e-9)
+    check("the soft clipper leaves everything below the knee alone",
+          np.array_equal(c[quiet], loud[quiet]))
+
+    ref, _ = normalize(x * 0.5, SR, -14.0, -1.0)
+    clipped, _ = normalize(x * 0.5, SR, -14.0, -1.0, clip=0.5)
+    tp = true_peak_db(clipped, SR, oversample=8)
+    check("with the clipper on, the true peak still holds the ceiling", tp <= -1.0 + 0.01,
+          f"{tp:+.2f} dBTP")
+
+
 def main() -> int:
     print(f"Airband self-test, {SR} Hz\n")
     test_loudness()
@@ -305,6 +360,7 @@ def main() -> int:
     test_restoration()
     test_auto_params()
     test_deshimmer()
+    test_dynamics()
 
     print()
     if fails:

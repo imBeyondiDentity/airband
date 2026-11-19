@@ -23,6 +23,7 @@ from analysis import (average_spectrum, band_energy_db, band_reference,
 from master import album_offset, apply_offset, normalize
 from restore import harmonic_air, match_reference, tone, widen
 from deshimmer import deshimmer, shimmer_amount
+from dynamics import mono_bass, multiband
 
 
 @dataclass
@@ -34,6 +35,9 @@ class Params:
     width: float = 0.35
     follow: bool = True
     deshimmer: float = 0.6
+    multiband: float = 0.0      # gentle four-band compression, 0..1
+    mono_bass: float = 0.0      # side signal removed below 120 Hz, 0..1
+    clip: float = 0.0           # soft clipper ahead of the limiter, 0..1
 
 
 PRESETS = {
@@ -41,6 +45,8 @@ PRESETS = {
     "wav-polish": Params(air=0.55, drive=0.45, shelf=2.0, mud=-1.5, width=0.25, deshimmer=0.5),
     "air-only":   Params(air=0.65, drive=0.50, shelf=2.5, mud=0.0,  width=0.0,  deshimmer=0.5),
     "flat":       Params(air=0.0,  drive=0.0,  shelf=0.0, mud=0.0,  width=0.0,  deshimmer=0.0),
+    "master":     Params(air=0.70, drive=0.60, shelf=2.5, mud=-2.0, width=0.30, deshimmer=0.6,
+                         multiband=0.5, mono_bass=1.0, clip=0.4),
 }
 
 
@@ -117,6 +123,9 @@ def restore(x: np.ndarray, sr: int, p: Params, cut: dict,
     y = widen(y, sr, p.width)
     if reference is not None:
         y = match_reference(y, sr, reference, strength=ref_strength)
+    # Dynamics after the tone is final, so the compressor sees the finished balance.
+    y = multiband(y, sr, p.multiband)
+    y = mono_bass(y, sr, p.mono_bass)
     return y
 
 
@@ -161,13 +170,23 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--width", type=float, help="stereo width above 2.5 kHz, 0..1")
     g.add_argument("--deshimmer", type=float,
                    help="Suno shimmer cleanup before resynthesis, 0..1 (0 — off)")
+    g.add_argument("--multiband", type=float,
+                   help="gentle four-band compression, 0..1 (0 — off)")
+    g.add_argument("--mono-bass", type=float, dest="mono_bass",
+                   help="make everything below 120 Hz mono, 0..1 (0 — off)")
+    g.add_argument("--clip", type=float,
+                   help="soft clipper ahead of the limiter, 0..1 (0 — off)")
     g.add_argument("--no-follow", action="store_true",
                    help="don't follow the envelope, lay the top end down as a flat layer")
     g.add_argument("--cutoff", type=float, help="set the cutoff point by hand, Hz")
 
     m = ap.add_argument_group("loudness")
     m.add_argument("--target", type=float, default=-11.0, help="target loudness, LUFS (default -11)")
-    m.add_argument("--ceiling", type=float, default=-1.0, help="true-peak ceiling, dB (default -1)")
+    m.add_argument("--ceiling", type=float, default=None,
+                   help="true-peak ceiling, dB (default -1.0, or -1.5 with --format lossy)")
+    m.add_argument("--format", choices=("lossless", "lossy"), default="lossless",
+                   help="where the file is going: lossy means it will be encoded to MP3/AAC/Opus "
+                        "afterwards, which needs more headroom against overshoot")
     m.add_argument("--album", action="store_true",
                    help="one shared offset for the whole album, relative levels are kept")
 
@@ -184,7 +203,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def apply_overrides(p: Params, args) -> Params:
-    for key in ("air", "drive", "shelf", "mud", "width", "deshimmer"):
+    for key in ("air", "drive", "shelf", "mud", "width", "deshimmer",
+                "multiband", "mono_bass", "clip"):
         v = getattr(args, key)
         if v is not None:
             setattr(p, key, v)
@@ -216,6 +236,8 @@ def main(argv=None) -> int:
         return 2
 
     params = resolve_params(args)
+    if args.ceiling is None:
+        args.ceiling = -1.5 if args.format == "lossy" else -1.0
     out_dir = Path(args.out)
 
     reference = None
@@ -261,6 +283,9 @@ def main(argv=None) -> int:
             say(f"    auto: air {file_params.air:.2f}, drive {file_params.drive:.2f}, "
                 f"shelf {file_params.shelf:+.1f} dB, mud {file_params.mud:+.1f} dB, "
                 f"width {file_params.width:.2f}, de-shimmer {file_params.deshimmer:.2f}")
+        if file_params.multiband or file_params.mono_bass or file_params.clip:
+            say(f"    dynamics: multiband {file_params.multiband:.2f}, "
+                f"mono bass {file_params.mono_bass:.2f}, soft clip {file_params.clip:.2f}")
 
         y = restore(x, sr, file_params, cut, reference, args.ref_strength)
         if not cut["full_range"]:
@@ -277,13 +302,14 @@ def main(argv=None) -> int:
             tmp = Path(stash.name) / f"{i:04d}.npy"
             np.save(tmp, y.astype(np.float32))
             pending.append({"path": path, "tmp": tmp, "lufs": raw_lufs,
-                            "sr": sr, "cut": cut["hz"], "orig": None})
+                            "sr": sr, "cut": cut["hz"], "orig": None,
+                            "clip": file_params.clip})
             say(f"    loudness {lufs_in:+.1f} → {raw_lufs:+.1f} LUFS, waiting for the album\n")
             if args.report:
                 pending[-1]["orig"] = x.astype(np.float32)
             continue
 
-        y, stats = normalize(y, sr, args.target, args.ceiling)
+        y, stats = normalize(y, sr, args.target, args.ceiling, clip=file_params.clip)
         dest = out_dir / f"{path.stem}{args.suffix}.wav"
         audioio.write_wav24(dest, y, sr)
         say(f"    loudness {stats['lufs_before']:+.1f} → {stats['lufs_after']:+.1f} LUFS, "
@@ -306,7 +332,8 @@ def main(argv=None) -> int:
         # with a trial run of the loudest track.
         loudest = max(pending, key=lambda t: t["lufs"])
         probe = np.load(loudest["tmp"]).astype(np.float64)
-        _, pstat = apply_offset(probe, loudest["sr"], offset, args.ceiling)
+        _, pstat = apply_offset(probe, loudest["sr"], offset, args.ceiling,
+                                clip=loudest["clip"])
         shortfall = args.target - pstat["lufs_after"]
         if abs(shortfall) > 0.1:
             offset += shortfall
@@ -315,7 +342,7 @@ def main(argv=None) -> int:
         say(f"Album offset: {offset:+.2f} dB\n")
         for t in pending:
             y = np.load(t["tmp"]).astype(np.float64)
-            y, stats = apply_offset(y, t["sr"], offset, args.ceiling)
+            y, stats = apply_offset(y, t["sr"], offset, args.ceiling, clip=t["clip"])
             dest = out_dir / f"{t['path'].stem}{args.suffix}.wav"
             audioio.write_wav24(dest, y, t["sr"])
             say(f"{t['path'].name}: {stats['lufs_before']:+.1f} → {stats['lufs_after']:+.1f} LUFS, "
