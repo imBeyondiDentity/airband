@@ -554,6 +554,53 @@ the device, the browser and the exact order of taps.
 
 ---
 
+## Documentation: what each control does
+
+A new section in both READMEs explains every control: what it does, its range
+and default, the order in which the processing runs, and the matching Python
+option. Every figure in it (ranges, defaults, filter frequencies and Q values,
+compressor settings, limiter times) was checked against the code rather than
+written from memory.
+
+### A wording fix
+The README, and a comment in the Python version, said that the low end "stays
+mono" under stereo widening. That isn't quite right: the width below 2.5 kHz
+is simply left as it was, so stereo in the bass stays stereo. Both now say so.
+(The comment change doesn't touch the processing: the results are bit-identical.)
+
+---
+
+## Documentation: installing on a managed Python
+
+On current Debian and Ubuntu a bare `pip install numpy scipy` fails with `error: externally-managed-environment` (PEP 668). Every install instruction now uses a virtual environment (`python3 -m venv`, then `pip install` inside it), with the distribution packages (`apt install python3-numpy python3-scipy`) as the alternative and `--break-system-packages` advised against. Changed: `README.md`, `ABOUT.md`, `python/README.md` and the ffmpeg-missing message in `audioio.py`, plus the `_ru` versions. No code behaviour changed.
+
+---
+
+
+## Master polish: reference, multiband, mono bass, soft clipper, lossy ceiling
+
+Research into open-source mastering and restoration work (Matchering, ITO-Master, Apollo, A2SB, SonicMaster) produced a plan; this is its first phase, plain DSP with no third-party code or weights.
+
+### What was added
+- **Reference matching in the browser.** It existed only in Python. Both now use the same maths (smoothed spectral ratio, mean over 200–2000 Hz removed, ±6 dB cap, linear-phase FIR). On a test with a strong correction the browser and Python filter curves agreed to within 0.12 dB.
+- **Multiband compression.** Four zero-phase bands, thresholds from each band's own level, gentle ratios, at most 6 dB of reduction. Chunked in ten-second pieces with a one-second margin, so a four-minute track costs the memory of ten seconds (about 600 MB peak for the whole test process, 4.8 s in Python).
+- **Mono bass below 120 Hz.** Fourth-order zero-phase low-pass; the side signal at 60 Hz is 48 dB down at full strength, the mid signal and everything above the corner are untouched.
+- **Soft clipper before the limiter.** A tanh curve above a knee that sits up to 3 dB under the ceiling; it never passes the ceiling.
+- **Ceiling for lossy delivery.** `--format lossy` in Python and a "Going to MP3/AAC" switch in the browser lower the ceiling from −1.0 to −1.5 dBTP.
+- A **Full master** preset (browser) and `--preset master` (Python) switch the new stages on.
+
+### Checked
+- With every new stage at zero, the output is bit-for-bit identical to before: five Python presets, restore and final arrays compared; the browser MP3 and WAV presets compared sample for sample in real Chrome.
+- Browser and Python implementations of multiband (−92 dB RMS difference), soft clipper and mono bass (interior difference 3e-8) agree on the same signal.
+- Nine new self-test checks in `selftest.py`; all pass. English and Russian pages load without script errors and run the full chain, including a reference track.
+
+### Not done, and why
+- **A Web Worker for the whole chain.** Web Audio (`OfflineAudioContext`), on which the browser chain is built, is not available inside workers. The new stages instead run in chunks that give the page a breath between them. A worker would need the chain rewritten without Web Audio.
+- Not tested on real Suno material yet: the multiband effect on the synthetic test signal is small (crest factor down about 0.6 dB at 80). Its settings are a first guess, to be tuned by ear.
+- Neural restoration (Apollo) is planned as an optional Python-only backend; none of it is in this release.
+
+---
+
 ## What changed overall
 
 | Before | After |
@@ -570,6 +617,9 @@ the device, the browser and the exact order of taps.
 | Docs under mixed names, code comments half in Russian | README/CHANGELOG in British English, Russian versions as `_ru`; Python and `en.html` English throughout, sound bit-identical |
 | Auto froze the page for 5–6 s (16 s on a four-minute track) | Computed in steps and in the background: 0.03 s freeze once it's warm, results unchanged |
 | Clear could leave old audio playing, unstoppable; replay after the end played 50 ms | Every source registered, silenced first, context dropped on Clear; replay starts from the beginning |
+| Nothing explained what the controls do | A README section on every control, checked against the code |
+| `pip install` failed on Debian/Ubuntu (PEP 668) | Virtual-environment instructions everywhere, distribution packages as the alternative |
+| Reference matching only in Python; no multiband, mono bass or clipper; one fixed ceiling | All of it in both versions (off by default, bit-identical when off); a −1.5 dBTP ceiling for lossy delivery |
 | Browser "true peak" actually measured samples (up to 6 dB out) | An honest BS.1770-4 measurement, checked against a 16× reference |
 | Browser top-end restoration: 7.4 dB error, tilted | 2.6 dB, flat — close to Python's 2.2 |
 | The exciter multiplied Suno's shimmer upwards | A de-shimmer ahead of the exciter in both versions |

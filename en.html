@@ -465,6 +465,23 @@ p { margin: 0 0 12px; }
 
 /* ---------- controls ---------- */
 
+.ref-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+.ref-name {
+  flex: 1 1 120px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
 .ctl {
   display: grid;
   grid-template-columns: 1fr 96px;
@@ -683,6 +700,7 @@ footer {
         <button class="chip is-on" data-preset="mp3" type="button">MP3 restoration</button>
         <button class="chip" data-preset="wav" type="button">WAV polish</button>
         <button class="chip" data-preset="air" type="button">Top end only</button>
+        <button class="chip" data-preset="master" type="button">Full master</button>
         <button class="chip" data-preset="flat" type="button">Loudness only</button>
       </div>
 
@@ -730,6 +748,41 @@ footer {
         <output id="oGlue">off</output>
       </div>
 
+      <h3 class="subsection-label">Reference</h3>
+
+      <div class="ref-row">
+        <button class="btn btn-quiet" id="refBtn" type="button">Choose reference track</button>
+        <input type="file" id="refInput" accept="audio/*,.mp3,.wav,.flac,.m4a,.ogg" hidden>
+        <span class="ref-name" id="refName">No reference</span>
+        <button class="btn btn-quiet" id="refClear" type="button" hidden>Remove</button>
+      </div>
+
+      <div class="ctl">
+        <label for="cRefMatch">Match strength</label>
+        <input type="range" id="cRefMatch" min="0" max="100" value="100">
+        <output id="oRefMatch">100</output>
+      </div>
+
+      <h3 class="subsection-label">Master polish</h3>
+
+      <div class="ctl">
+        <label for="cMultiband">Multiband compression</label>
+        <input type="range" id="cMultiband" min="0" max="100" value="0">
+        <output id="oMultiband">off</output>
+      </div>
+
+      <div class="ctl">
+        <label for="cMonoBass">Mono bass below 120 Hz</label>
+        <input type="range" id="cMonoBass" min="0" max="100" value="0">
+        <output id="oMonoBass">off</output>
+      </div>
+
+      <div class="ctl">
+        <label for="cClip">Soft clipper before limiter</label>
+        <input type="range" id="cClip" min="0" max="100" value="0">
+        <output id="oClip">off</output>
+      </div>
+
       <h3 class="subsection-label">Loudness</h3>
 
       <div class="ctl ctl-wide">
@@ -738,7 +791,11 @@ footer {
         <output id="oTarget">−11.0 LUFS</output>
       </div>
 
-      <p class="hint">−14 LUFS for Spotify and Apple, −11 for a louder, denser club-ready master. Ceiling stays at −1 dB.</p>
+      <div class="presets">
+        <button class="chip" id="lossyChip" type="button" style="grid-column: 1 / -1">Going to MP3/AAC: ceiling −1.5 dB</button>
+      </div>
+
+      <p class="hint">−14 LUFS for Spotify and Apple, −11 for a louder, denser club-ready master. Ceiling stays at −1 dB (−1.5 dB for MP3/AAC).</p>
     </section>
 
   </div>
@@ -1533,6 +1590,225 @@ function warmShimmer(t) {
   if (t && t.specA && !t.shimmerPromise) setTimeout(() => ensureShimmer(t), 60);
 }
 
+/* ============================================================
+   Master polish: reference match, multiband, mono bass, soft clipper
+   Same maths as python/dynamics.py and match_reference() in python/restore.py.
+   ============================================================ */
+
+const DYN = {
+  splits: [150, 1500, 6000],
+  ratio: [2.0, 2.0, 1.8, 1.6],
+  attackMs: [30, 15, 8, 4],
+  releaseMs: [250, 160, 110, 80],
+  percentile: 60,
+  maxGrDb: 6,
+  detectMs: 20,
+  decimate: 64,
+  chunkS: 10,
+  marginS: 1,
+  monoBassHz: 120,
+  clipKneeDb: 3
+};
+
+const nextTick = () => new Promise((r) => setTimeout(r, 0));
+
+/* A zero-phase low-pass: Butterworth sections run forwards and then backwards,
+   as scipy's sosfiltfilt does. */
+function zpLowpass(x, hz, sr, order) {
+  const qs = order === 4 ? [0.5411961, 1.3065630] : [Math.SQRT1_2];
+  const y = Float64Array.from(x);
+  const w0 = 2 * Math.PI * hz / sr, cw = Math.cos(w0), sw = Math.sin(w0);
+  for (const q of qs) {
+    const alpha = sw / (2 * q), a0 = 1 + alpha;
+    const b0 = (1 - cw) / 2 / a0, b1 = (1 - cw) / a0, b2 = b0;
+    const a1 = -2 * cw / a0, a2 = (1 - alpha) / a0;
+    for (let pass = 0; pass < 2; pass++) {
+      let z1 = 0, z2 = 0;
+      if (pass === 0) {
+        for (let i = 0; i < y.length; i++) {
+          const v = y[i], o = b0 * v + z1;
+          z1 = b1 * v - a1 * o + z2; z2 = b2 * v - a2 * o; y[i] = o;
+        }
+      } else {
+        for (let i = y.length - 1; i >= 0; i--) {
+          const v = y[i], o = b0 * v + z1;
+          z1 = b1 * v - a1 * o + z2; z2 = b2 * v - a2 * o; y[i] = o;
+        }
+      }
+    }
+  }
+  return y;
+}
+
+function onePole(x, ms, sr) {
+  const a = Math.exp(-1 / Math.max(1, ms * 1e-3 * sr));
+  const y = new Float64Array(x.length);
+  let s = 0;
+  for (let i = 0; i < x.length; i++) { s = (1 - a) * x[i] + a * s; y[i] = s; }
+  return y;
+}
+
+/* Splits a chunk into four bands; the bands add back to the input exactly. */
+function dynSplit(chs, sr) {
+  const bands = [];
+  let rest = chs.map((c) => Float64Array.from(c));
+  for (const hz of DYN.splits) {
+    const low = rest.map((c) => zpLowpass(c, hz, sr, 2));
+    bands.push(low);
+    rest = rest.map((c, k) => { const r = new Float64Array(c.length); for (let i = 0; i < r.length; i++) r[i] = c[i] - low[k][i]; return r; });
+  }
+  bands.push(rest);
+  return bands;
+}
+
+function bandLevelDb(band, sr) {
+  const n = band[0].length, p = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let c = 0; c < band.length; c++) s += band[c][i] * band[c][i];
+    p[i] = s / band.length;
+  }
+  const sm = onePole(p, DYN.detectMs, sr);
+  for (let i = 0; i < n; i++) sm[i] = 10 * Math.log10(sm[i] + 1e-12);
+  return sm;
+}
+
+/* Static curve first, then asymmetric smoothing: a fast and a slow one-pole,
+   and the larger of the two. */
+function gainReductionDb(level, thr, ratio, attackMs, releaseMs, sr) {
+  const gr = new Float64Array(level.length), k = 1 - 1 / ratio;
+  for (let i = 0; i < gr.length; i++) gr[i] = Math.min(Math.max(level[i] - thr, 0) * k, DYN.maxGrDb);
+  const fast = onePole(gr, attackMs, sr), slow = onePole(gr, releaseMs, sr);
+  for (let i = 0; i < gr.length; i++) gr[i] = Math.max(fast[i], slow[i]);
+  return gr;
+}
+
+function mbChunk(chs, sr, amount, thr) {
+  const bands = dynSplit(chs, sr);
+  const out = chs.map((c) => new Float64Array(c.length));
+  const levels = [];
+  for (let b = 0; b < bands.length; b++) {
+    const lv = bandLevelDb(bands[b], sr);
+    const dec = new Float64Array(Math.ceil(lv.length / DYN.decimate));
+    for (let i = 0; i < dec.length; i++) dec[i] = lv[i * DYN.decimate];
+    levels.push(dec);
+    let gain = null;
+    if (thr) {
+      const ratio = 1 + amount * (DYN.ratio[b] - 1);
+      const gr = gainReductionDb(lv, thr[b], ratio, DYN.attackMs[b], DYN.releaseMs[b], sr);
+      gain = new Float64Array(gr.length);
+      for (let i = 0; i < gr.length; i++) gain[i] = Math.pow(10, -gr[i] / 20);
+    }
+    for (let c = 0; c < out.length; c++) {
+      const o = out[c], s = bands[b][c];
+      if (gain) for (let i = 0; i < o.length; i++) o[i] += s[i] * gain[i];
+      else for (let i = 0; i < o.length; i++) o[i] += s[i];
+    }
+  }
+  return { out, levels };
+}
+
+/* Four-band gentle compression with thresholds taken from the track itself.
+   Works in ten-second chunks with a one-second margin and gives the page
+   a breath between chunks. Changes `chans` in place. */
+async function multibandInPlace(chans, sr, amount) {
+  if (!(amount > 0)) return;
+  amount = Math.min(amount, 1);
+  const n = chans[0].length, size = Math.round(DYN.chunkS * sr), margin = Math.round(DYN.marginS * sr);
+  const spans = [];
+  for (let start = 0; start < n; start += size) {
+    const stop = Math.min(n, start + size);
+    spans.push([start, stop, Math.max(0, start - margin), Math.min(n, stop + margin)]);
+  }
+  const pools = DYN.splits.map(() => []).concat([[]]);
+  for (const [start, stop, lo, hi] of spans) {
+    const { levels } = mbChunk(chans.map((c) => c.subarray(lo, hi)), sr, amount, null);
+    const s0 = Math.floor((start - lo) / DYN.decimate);
+    const s1 = s0 + Math.max(1, Math.floor((stop - start) / DYN.decimate));
+    levels.forEach((lv, b) => pools[b].push(lv.subarray(s0, Math.min(s1, lv.length))));
+    await nextTick();
+  }
+  const thr = pools.map((parts) => {
+    let total = 0; for (const p of parts) total += p.length;
+    const all = new Float64Array(total); let o = 0;
+    for (const p of parts) { all.set(p, o); o += p.length; }
+    return percentile(all, DYN.percentile);
+  });
+  for (const [start, stop, lo, hi] of spans) {
+    const { out } = mbChunk(chans.map((c) => c.subarray(lo, hi)), sr, amount, thr);
+    for (let c = 0; c < chans.length; c++) {
+      for (let i = start; i < stop; i++) chans[c][i] = out[c][i - lo];
+    }
+    await nextTick();
+  }
+}
+
+/* Takes the side signal out of the low end so the bass stays centred. */
+function monoBassInPlace(chans, sr, amount) {
+  if (!(amount > 0) || chans.length < 2) return;
+  amount = Math.min(amount, 1);
+  const L = chans[0], R = chans[1];
+  const lowL = zpLowpass(L, DYN.monoBassHz, sr, 4), lowR = zpLowpass(R, DYN.monoBassHz, sr, 4);
+  for (let i = 0; i < L.length; i++) {
+    const side = 0.5 * (lowL[i] - lowR[i]) * amount;
+    L[i] -= side; R[i] += side;
+  }
+}
+
+/* Rounds the tops of the peaks before the limiter: untouched below the knee,
+   bent smoothly towards the ceiling above it, never past it. */
+function softClipInPlace(chans, ceilingLin, amount) {
+  if (!(amount > 0)) return;
+  amount = Math.min(amount, 1);
+  const knee = ceilingLin * Math.pow(10, -DYN.clipKneeDb * amount / 20);
+  const span = ceilingLin - knee;
+  for (const ch of chans) {
+    for (let i = 0; i < ch.length; i++) {
+      const v = ch[i], a = Math.abs(v);
+      if (a > knee) ch[i] = (v < 0 ? -1 : 1) * (knee + span * Math.tanh((a - knee) / span));
+    }
+  }
+}
+
+/* Reference match: the ratio of the two smoothed spectra, its mean over
+   200-2000 Hz taken off (the shape is corrected, not the loudness), limited to
+   +/-6 dB, then applied as a linear-phase FIR. `refDb`/`refSr` come from
+   referenceCurve() on the reference track. */
+function referenceCurve(buffer) {
+  const ps = powerSpectrum(buffer);
+  return { db: toDb(smoothOctave(ps.power, buffer.sampleRate, 1 / 6)), sr: buffer.sampleRate };
+}
+
+function referenceFilter(buffer, ref, strength, taps) {
+  const sr = buffer.sampleRate;
+  const ps = powerSpectrum(buffer);
+  const dx = toDb(smoothOctave(ps.power, sr, 1 / 6));
+  const nBins = dx.length, binHz = sr / FFT_SIZE, refBin = ref.sr / FFT_SIZE;
+  const corr = new Float64Array(nBins);
+  let sum = 0, cnt = 0;
+  for (let i = 1; i < nBins; i++) {
+    const pos = (i * binHz) / refBin, j = Math.min(ref.db.length - 2, Math.floor(pos)), fr = pos - j;
+    const r = ref.db[j] + (ref.db[j + 1] - ref.db[j]) * fr;
+    corr[i] = r - dx[i];
+    const f = i * binHz;
+    if (f >= 200 && f <= 2000) { sum += corr[i]; cnt++; }
+  }
+  const mean = cnt ? sum / cnt : 0;
+  const gain = new Float64Array(nBins + 1);
+  for (let i = 1; i < nBins; i++) {
+    gain[i] = Math.pow(10, Math.max(-6, Math.min(6, corr[i] - mean)) * strength / 20);
+  }
+  gain[0] = gain[1]; gain[nBins] = gain[nBins - 1];
+  const N = taps | 1, M = (N - 1) / 2, h = new Float64Array(N);
+  for (let n = 0; n < N; n++) {
+    const t = n - M;
+    let s = gain[0] + gain[nBins] * Math.cos(Math.PI * t);
+    for (let k = 1; k < nBins; k++) s += 2 * gain[k] * Math.cos(2 * Math.PI * k * t / FFT_SIZE);
+    h[n] = s / FFT_SIZE * (0.5 - 0.5 * Math.cos(2 * Math.PI * n / (N - 1)));
+  }
+  return h;
+}
+
 async function renderChain(buffer, p, cut, feedBuf) {
   const sr = buffer.sampleRate;
   const nyq = sr / 2;
@@ -1884,10 +2160,11 @@ function encodeWav24(buffer) {
    ============================================================ */
 
 const PRESETS = {
-  mp3:  { air: 0.70, drive: 0.65, shelf: 3.0, mud: -2.5, width: 0.35, glue: 0, deshimmer: 0.6 },
-  wav:  { air: 0.45, drive: 0.45, shelf: 2.0, mud: -1.5, width: 0.25, glue: 0, deshimmer: 0.5 },
-  air:  { air: 0.60, drive: 0.50, shelf: 2.5, mud: 0.0,  width: 0.00, glue: 0, deshimmer: 0.5 },
-  flat: { air: 0.00, drive: 0.00, shelf: 0.0, mud: 0.0,  width: 0.00, glue: 0, deshimmer: 0.0 }
+  mp3:  { air: 0.70, drive: 0.65, shelf: 3.0, mud: -2.5, width: 0.35, glue: 0, deshimmer: 0.6, multiband: 0, monoBass: 0, clip: 0 },
+  wav:  { air: 0.45, drive: 0.45, shelf: 2.0, mud: -1.5, width: 0.25, glue: 0, deshimmer: 0.5, multiband: 0, monoBass: 0, clip: 0 },
+  air:  { air: 0.60, drive: 0.50, shelf: 2.5, mud: 0.0,  width: 0.00, glue: 0, deshimmer: 0.5, multiband: 0, monoBass: 0, clip: 0 },
+  flat: { air: 0.00, drive: 0.00, shelf: 0.0, mud: 0.0,  width: 0.00, glue: 0, deshimmer: 0.0, multiband: 0, monoBass: 0, clip: 0 },
+  master: { air: 0.65, drive: 0.60, shelf: 2.5, mud: -2.0, width: 0.30, glue: 0, deshimmer: 0.6, multiband: 0.5, monoBass: 1, clip: 0.4 }
 };
 
 /* Master Assistant: the parameters are worked out from the track itself rather than taken
@@ -1915,16 +2192,17 @@ async function computeAutoParams(t) {
   const amt = await ensureShimmer(t);
   const desh = Math.max(0.3, Math.min(0.8, 0.3 + 0.25 * amt));
 
-  return { air, drive, shelf, mud, width, glue: 0, deshimmer: desh };
+  return { air, drive, shelf, mud, width, glue: 0, deshimmer: desh, multiband: 0, monoBass: 0, clip: 0 };
 }
 
 const state = {
   autoToken: 0,
   autoPending: null,
   tracks: [],
+  reference: null,
   activeId: null,
   seq: 0,
-  params: Object.assign({ target: -11.0, ceiling: -1.0 }, PRESETS.mp3),
+  params: Object.assign({ target: -11.0, ceiling: -1.0, refMatch: 1 }, PRESETS.mp3),
   ab: 'b',
   levelMatch: true,
   busy: false
@@ -2037,6 +2315,17 @@ async function processTrack(t) {
     chans.push(Float32Array.from(rendered.getChannelData(c)));
   }
 
+  if (state.reference && p.refMatch > 0) {
+    const h = referenceFilter(rendered, state.reference, p.refMatch, 2049);
+    await new Promise((r) => setTimeout(r, 0));
+    for (let c = 0; c < chans.length; c++) {
+      chans[c] = convolveSame(chans[c], h);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+  await multibandInPlace(chans, sr, p.multiband);
+  monoBassInPlace(chans, sr, p.monoBass);
+
   const lufsIn = measureLUFS(
     Array.from({ length: t.orig.numberOfChannels }, (_, c) => t.orig.getChannelData(c)),
     t.orig.sampleRate
@@ -2062,7 +2351,12 @@ async function processTrack(t) {
       for (let i = 0; i < src.length; i++) dst[i] = src[i] * g;
     }
     for (let i = 0; i < dryEnv.length; i++) scaledEnv[i] = dryEnv[i] * g;
-    limit(chans, ceiling, sr, scaledEnv);
+    if (p.clip > 0) {
+      softClipInPlace(chans, ceiling * Math.pow(10, -0.7 / 20), p.clip);
+      limit(chans, ceiling, sr);
+    } else {
+      limit(chans, ceiling, sr, scaledEnv);
+    }
     return measureLUFS(chans, sr);
   };
 
@@ -2369,6 +2663,10 @@ const controls = [
   { el: 'cMud',    out: 'oMud',    key: 'mud',    map: (v) => -v / 10,        fmt: (v) => (v === 0 ? 'off' : fmtDb(v)) },
   { el: 'cWidth',  out: 'oWidth',  key: 'width',  map: (v) => v / 100,        fmt: (v) => (v === 0 ? 'off' : String(Math.round(v * 100))) },
   { el: 'cGlue',   out: 'oGlue',   key: 'glue',   map: (v) => v / 100,        fmt: (v) => (v === 0 ? 'off' : String(Math.round(v * 100))) },
+  { el: 'cMultiband', out: 'oMultiband', key: 'multiband', map: (v) => v / 100, fmt: (v) => (v === 0 ? 'off' : String(Math.round(v * 100))) },
+  { el: 'cMonoBass', out: 'oMonoBass', key: 'monoBass', map: (v) => v / 100, fmt: (v) => (v === 0 ? 'off' : String(Math.round(v * 100))) },
+  { el: 'cClip', out: 'oClip', key: 'clip', map: (v) => v / 100, fmt: (v) => (v === 0 ? 'off' : String(Math.round(v * 100))) },
+  { el: 'cRefMatch', out: 'oRefMatch', key: 'refMatch', map: (v) => v / 100, fmt: (v) => String(Math.round(v * 100)) },
   { el: 'cTarget', out: 'oTarget', key: 'target', map: (v) => v / 10,         fmt: (v) => fmtLufs(v) }
 ];
 
@@ -2401,12 +2699,12 @@ function markPresetCustom() {
   for (const [k, v] of Object.entries(PRESETS)) {
     if (Object.keys(v).every((key) => Math.abs(v[key] - p[key]) < 0.005)) { match = k; break; }
   }
-  document.querySelectorAll('.chip').forEach((c) => {
+  document.querySelectorAll('.chip[data-preset]').forEach((c) => {
     c.classList.toggle('is-on', c.dataset.preset === match);
   });
 }
 
-document.querySelectorAll('.chip').forEach((chip) => {
+document.querySelectorAll('.chip[data-preset]').forEach((chip) => {
   chip.addEventListener('click', () => {
     if (chip.dataset.preset === 'auto') {
       const t = state.tracks.find((x) => x.id === state.activeId);
@@ -2419,7 +2717,7 @@ document.querySelectorAll('.chip').forEach((chip) => {
           if (token === state.autoToken && state.tracks.includes(t) && state.activeId === t.id) {
             Object.assign(state.params, params);
             syncControls();
-            document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('is-on', c === chip));
+            document.querySelectorAll('.chip[data-preset]').forEach((c) => c.classList.toggle('is-on', c === chip));
           }
         })
         .catch((e) => console.error(e))
@@ -2432,6 +2730,38 @@ document.querySelectorAll('.chip').forEach((chip) => {
   });
 });
 
+
+/* ---------- reference track and output format ---------- */
+
+$('refBtn').addEventListener('click', () => $('refInput').click());
+$('refInput').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  $('refName').textContent = 'Reading reference…';
+  try {
+    const buf = await getDecodeCtx().decodeAudioData(await f.arrayBuffer());
+    await new Promise((r) => setTimeout(r, 0));
+    state.reference = referenceCurve(buf);
+    $('refName').textContent = f.name;
+    $('refClear').hidden = false;
+  } catch (err) {
+    state.reference = null;
+    $('refName').textContent = 'Unsupported format';
+    $('refClear').hidden = true;
+  }
+});
+$('refClear').addEventListener('click', () => {
+  state.reference = null;
+  $('refName').textContent = 'No reference';
+  $('refClear').hidden = true;
+});
+
+$('lossyChip').addEventListener('click', () => {
+  const on = !$('lossyChip').classList.contains('is-on');
+  $('lossyChip').classList.toggle('is-on', on);
+  state.params.ceiling = on ? -1.5 : -1.0;
+});
 /* ---------- drag & drop ---------- */
 
 const dz = $('dropzone');
